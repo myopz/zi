@@ -10,6 +10,7 @@ flowchart TB
   GS[GETTING_STARTED]
   ARCH[ARCHITECTURE]
   CLI[CLI]
+  WEB[WEB]
   CFG[CONFIGURATION]
   MODELS[MODELS]
   CRATES[CRATES]
@@ -28,17 +29,20 @@ flowchart TB
   ARCH --> CRATES
   ARCH --> SESS
   CLI --> COMPAT
+  CLI --> WEB
   SESS --> COMPAT
   DEV --> CRATES
   DEV --> EXT
   EXT --> CFG
 ```
 
+
 | 文档 | 读者 | 说明 |
 |------|------|------|
 | [GETTING_STARTED.md](./GETTING_STARTED.md) | 新用户 | 依赖、密钥、第一次 `zi` |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | 贡献者 | 双路径、依赖与事件流（Mermaid） |
-| [CLI.md](./CLI.md) | 使用者 | print / json / rpc / interactive |
+| [CLI.md](./CLI.md) | 使用者 | print / json / rpc / interactive / web |
+| [WEB.md](./WEB.md) | 使用者 / 前端 | Web 宿主、token 登录、REST/WS 合同 |
 | [CONFIGURATION.md](./CONFIGURATION.md) | 使用者 | 路径与环境变量 |
 | [EXTENSIONS.md](./EXTENSIONS.md) | 扩展作者 | 从 0 开发 WASM（含 Rust→`.wasm` 示例）/ host pack 到在 zi 里使用 |
 | [MODELS.md](./MODELS.md) | 使用者 | 内置模型、`.env`、`models.json` |

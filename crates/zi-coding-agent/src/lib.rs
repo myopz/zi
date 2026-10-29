@@ -20,6 +20,7 @@ pub mod system_prompt;
 pub mod themes;
 pub mod tools;
 pub mod trust;
+pub mod web;
 
 pub use modes::interactive::{
     boxed_prompt, run as run_interactive_mode, run_with as run_interactive_with, PromptCallback,

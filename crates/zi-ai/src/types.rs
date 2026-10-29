@@ -50,8 +50,8 @@ pub struct TextContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "text")]
 pub enum TextContentKind {
+    #[serde(rename = "text")]
     Text,
 }
 
@@ -68,8 +68,8 @@ pub struct ThinkingContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "thinking")]
 pub enum ThinkingContentKind {
+    #[serde(rename = "thinking")]
     Thinking,
 }
 
@@ -83,8 +83,8 @@ pub struct ImageContent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "image")]
 pub enum ImageContentKind {
+    #[serde(rename = "image")]
     Image,
 }
 
@@ -105,8 +105,8 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "toolCall")]
 pub enum ToolCallType {
+    #[serde(rename = "toolCall")]
     ToolCall,
 }
 
@@ -228,6 +228,8 @@ pub enum StopReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemMessage {
+    /// Provided by [`Message`]'s `role` tag; skipped so JSON clients see one key.
+    #[serde(default, skip_serializing)]
     pub role: SystemRole,
     pub content: SystemContent,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,9 +241,10 @@ pub struct SystemMessage {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "system")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum SystemRole {
+    #[default]
+    #[serde(rename = "system")]
     System,
 }
 
@@ -255,14 +258,17 @@ pub enum SystemContent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserMessage {
+    /// Provided by [`Message`]'s `role` tag; skipped so JSON clients see one key.
+    #[serde(default, skip_serializing)]
     pub role: UserRole,
     pub content: UserContent,
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "user")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum UserRole {
+    #[default]
+    #[serde(rename = "user")]
     User,
 }
 
@@ -283,6 +289,8 @@ pub enum UserContentBlock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AssistantMessage {
+    /// Provided by [`Message`]'s `role` tag; skipped so JSON clients see one key.
+    #[serde(default, skip_serializing)]
     pub role: AssistantRole,
     pub content: Vec<AssistantContentBlock>,
     pub api: String,
@@ -303,15 +311,18 @@ pub struct AssistantMessage {
     pub duration_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "assistant")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum AssistantRole {
+    #[default]
+    #[serde(rename = "assistant")]
     Assistant,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResultMessage {
+    /// Provided by [`Message`]'s `role` tag; skipped so JSON clients see one key.
+    #[serde(default, skip_serializing)]
     pub role: ToolResultRole,
     pub tool_call_id: String,
     pub tool_name: String,
@@ -322,9 +333,10 @@ pub struct ToolResultMessage {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename = "toolResult")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum ToolResultRole {
+    #[default]
+    #[serde(rename = "toolResult")]
     ToolResult,
 }
 

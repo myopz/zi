@@ -36,6 +36,8 @@ flowchart TB
 | `~/.zi/agent/.env` | 用户级 API Key（启动自动加载，不覆盖已有环境变量） |
 | `<cwd>/.env` | 项目级 API Key（优先于 agent `.env`） |
 | `~/.zi/agent/sessions/` | Session v3 JSONL |
+| `~/.zi/agent/web/zi-web.sqlite` | Web 模式权威库（用户 / token / workspace / session / messages；见 [WEB.md](./WEB.md)） |
+| `~/.zi/agent/web/workspaces/<userId>/` | Web 默认工作区（agent 工具 cwd；与源码仓库隔离） |
 | `.zi/` | 项目本地配置（对应 pi 的 `.pi/`；需 `/trust yes`） |
 | `.zi/extensions/<id>/extension.json` | 启用宿主 builtin 扩展包（`tps` / `redraws` / `prompt-url` / `import-repro`）；同目录也可放 `.wasm` |
 | `~/.agents/skills/`、`.agents/skills/` | Agent Skills 规范额外路径（项目 `.agents` 同样需信任） |
@@ -55,6 +57,7 @@ flowchart TB
 | `ZI_HOST_EXTENSIONS_PATH` | **构建期** host pack crate 路径（默认 `~/.zi/host-extensions`） |
 | `ZI_SOURCE_PATH` | **构建期** zi 源码根（默认即运行 `link-host-extensions.sh` 的仓库）；脚本据此写入 pack 的 `zi-ai` / `zi-session` 绝对 path |
 | `ZI_AGENT_DIR` | 覆盖 agent 根目录（默认 `~/.zi/agent`） |
+| `ZI_WEB_DIST` | 覆盖 Web 静态资源目录（默认探测 `zi-web/dist`） |
 
 Cargo 的 `path` 依赖无法直接展开环境变量：改路径后执行 `./scripts/link-host-extensions.sh`（仓库根 `host-extensions` → pack crate，并由 `Cargo.toml.in` 生成带绝对路径的 `Cargo.toml`），再 `cargo build`。运行时开关仍是 `~/.zi/agent/extensions/*/extension.json`。扩展从 0 到可用见 [EXTENSIONS.md](./EXTENSIONS.md)。
 | `ANTHROPIC_API_KEY` | Anthropic |

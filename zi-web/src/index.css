@@ -1,0 +1,142 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SF Mono', ui-monospace, monospace;
+}
+
+:root {
+  --radius: 0.5rem;
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #fafafa;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #2563eb;
+  --primary-foreground: #f8fafc;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #27272a;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #dc2626;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #2563eb;
+  --sidebar: #f7f7f8;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #0c0e12;
+  --foreground: #e8eaed;
+  --card: #12151b;
+  --card-foreground: #e8eaed;
+  --popover: #161a22;
+  --popover-foreground: #e8eaed;
+  --primary: #5b9cff;
+  --primary-foreground: #061018;
+  --secondary: #1c212b;
+  --secondary-foreground: #d7dbe3;
+  --muted: #1a1f28;
+  --muted-foreground: #8b93a7;
+  --accent: #1e2633;
+  --accent-foreground: #e8eaed;
+  --destructive: #ef5f5f;
+  --border: #2a3140;
+  --input: #2a3140;
+  --ring: #5b9cff;
+  --sidebar: #0a0c10;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    margin: 0;
+  }
+
+  code,
+  pre,
+  kbd {
+    font-family: var(--font-mono);
+  }
+}
+
+@layer components {
+  .prose-zi {
+    @apply text-sm leading-relaxed text-foreground;
+  }
+
+  .prose-zi p {
+    @apply my-2;
+  }
+
+  .prose-zi pre {
+    @apply my-2 overflow-x-auto rounded-md border border-border bg-muted p-3 text-xs;
+  }
+
+  .prose-zi code {
+    @apply rounded bg-muted px-1 py-0.5 text-[0.85em];
+  }
+
+  .prose-zi pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .prose-zi ul {
+    @apply my-2 list-disc pl-5;
+  }
+
+  .prose-zi ol {
+    @apply my-2 list-decimal pl-5;
+  }
+
+  .prose-zi a {
+    @apply text-primary underline-offset-2 hover:underline;
+  }
+
+  .prose-zi h1,
+  .prose-zi h2,
+  .prose-zi h3 {
+    @apply mt-3 mb-2 font-semibold;
+  }
+}

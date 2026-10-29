@@ -10,15 +10,18 @@ cargo run -p zi-coding-agent -- [OPTIONS] [REST]...
 
 ```mermaid
 flowchart TD
-  START[启动 zi] --> HAS{有 -p / REST?}
+  START[启动 zi] --> SUB{子命令?}
+  SUB -->|web …| ADMIN[seed-user / list-users]
+  SUB -->|否| HAS{有 -p / REST?}
   HAS -->|是| MODE{--mode}
   HAS -->|否| TTY{stdin 是 TTY?}
   TTY -->|是| INT[interactive TUI]
-  TTY -->|否| NEED[需要 prompt 或 --mode rpc]
+  TTY -->|否| NEED[需要 prompt 或 --mode rpc/web]
   MODE -->|text / 默认| PRINT[print 文本]
   MODE -->|json| JSON[JSONL AgentEvent]
   MODE -->|rpc| RPC[stdin/stdout RPC]
   MODE -->|interactive| INT
+  MODE -->|web| WEB[axum HTTP/WS]
 ```
 
 | `--mode` | 行为 |
@@ -27,6 +30,7 @@ flowchart TD
 | `json` |  stdout 输出 JSONL `AgentEvent` |
 | `rpc` | 行协议：`prompt` / `abort` 等 |
 | `interactive` | 强制 TUI（需要 TTY） |
+| `web` | 本地多用户 Web 宿主（见 [WEB.md](./WEB.md)） |
 
 ## 常用参数
 
@@ -38,6 +42,8 @@ flowchart TD
 | `--model <ID>` | 内置目录或 `models.json`（如 `deepseek-flash`、`claude-sonnet-4-20250514`）；未知 id 报错 |
 | `--cwd <PATH>` | 工具工作目录与会话 cwd 编码 |
 | `--no-session` | 不写 `~/.zi/agent/sessions/` |
+| `--host` / `--port` | 仅 `--mode web`：绑定地址（默认 `127.0.0.1:3080`） |
+| `--no-open` | 仅 `--mode web`：不自动打开浏览器 |
 
 ## Print 模式
 
@@ -65,11 +71,23 @@ stdin/stdout JSONL。典型命令：`prompt`、`abort`。用于宿主进程嵌�
 cargo run -p zi-coding-agent -- --mode rpc --no-session
 ```
 
+## Web 模式
+
+HTTP + WebSocket 多用户宿主；SQLite 存用户/token/会话。详情与 API 见 [WEB.md](./WEB.md)。
+
+```bash
+cargo run -p zi-coding-agent -- web seed-user alice
+cargo run -p zi-coding-agent -- --mode web --no-open
+```
+
+子命令：`zi web seed-user <name> [--token …]`、`zi web list-users`。空库首次 `--mode web` 会 seed `alice` / `bob` / `admin` 并打印 token。
+
 ## Interactive（TUI）
 
 ```bash
 cargo run -p zi-coding-agent -- --mode interactive
 ```
+
 
 以 `/` 开头的行在进 LLM **之前**由本地 slash 命令处理：
 

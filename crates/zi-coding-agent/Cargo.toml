@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "zi coding agent CLI (print/json/rpc modes)"
+description = "zi coding agent CLI (print/json/rpc/web modes)"
 
 [lib]
 path = "src/lib.rs"
@@ -16,10 +16,17 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 async-trait = "0.1.88"
+axum = { version = "0.8.4", features = ["ws"] }
 base64 = "0.22.1"
 clap = { version = "4.5.37", features = ["derive"] }
 dotenvy = "0.15.7"
+futures = { workspace = true }
+hex = "0.4.3"
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.34.0", features = ["bundled"] }
+sha2 = "0.10.9"
+tower = "0.5.2"
+tower-http = { version = "0.6.6", features = ["fs", "set-header"] }
 zi-agent = { path = "../zi-agent" }
 zi-ai = { path = "../zi-ai" }
 zi-codemode = { path = "../zi-codemode" }

@@ -1,13 +1,15 @@
-//! CLI output modes (print, json, rpc, interactive).
+//! CLI output modes (print, json, rpc, interactive, web).
 
 mod json;
 pub mod interactive;
 mod print;
 mod rpc;
+mod web;
 
 pub use json::run_json_mode;
 pub use print::run_print_mode;
 pub use rpc::run_rpc_mode;
+pub use web::run_web_mode;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -106,7 +108,8 @@ fn wall_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn system_message(cwd: &Path) -> Message {
+/// Fresh system message for a workspace cwd (TUI and web share this).
+pub fn system_message(cwd: &Path) -> Message {
     Message::System(SystemMessage {
         role: SystemRole::System,
         content: SystemContent::Text(coding_agent_system_prompt(cwd)),

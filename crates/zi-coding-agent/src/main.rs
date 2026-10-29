@@ -20,6 +20,7 @@ mod system_prompt;
 mod themes;
 mod tools;
 mod trust;
+mod web;
 
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -36,10 +37,11 @@ use zi_tui::{
     KeybindingOverrides, LiveUpdate, SlashSuggestion, StatusInfo,
 };
 
-use cli::{Cli, OutputMode};
+use cli::{Cli, Command, OutputMode};
 use modes::interactive::{boxed_prompt, run as run_interactive_tui};
 use modes::{
-    prepare_runtime, resolve_cwd, run_json_mode, run_print_mode, run_rpc_mode, CliRuntime,
+    prepare_runtime, resolve_cwd, run_json_mode, run_print_mode, run_rpc_mode, run_web_mode,
+    CliRuntime,
 };
 use session_store::resolve_agent_dir;
 use slash::{autocomplete_hints, interactive_banner, try_handle_slash, SlashOutcome};
@@ -70,6 +72,10 @@ async fn run() -> Result<i32> {
     let cwd = resolve_cwd(cli.cwd.clone())?;
     env_file::load_env_files(&cwd, &resolve_agent_dir())?;
 
+    if let Some(Command::Web(web_cli)) = &cli.command {
+        return web::run_web_admin(web_cli);
+    }
+
     let want_interactive = matches!(cli.mode, OutputMode::Interactive)
         || (matches!(cli.mode, OutputMode::Text)
             && cli.prompt_text().is_none()
@@ -83,6 +89,7 @@ async fn run() -> Result<i32> {
             OutputMode::Json => run_json_mode(&cli).await?,
             OutputMode::Rpc => run_rpc_mode(&cli).await?,
             OutputMode::Interactive => run_interactive_cli(&cli).await?,
+            OutputMode::Web => run_web_mode(&cli).await?,
         }
     };
 

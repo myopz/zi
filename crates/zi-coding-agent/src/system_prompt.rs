@@ -23,9 +23,11 @@ pub fn coding_agent_system_prompt_with(agent_dir: &Path, cwd: &Path, trusted: bo
     } else {
         let cwd_display = cwd.to_string_lossy();
         format!(
-            "You are zi, a coding agent. Work in the user's project at `{cwd_display}`.\n\
-             Use the provided tools (read, bash, edit, write) to inspect and change files.\n\
-             Prefer small, focused edits. Run shell commands via bash when needed.\n\
+            "You are zi, a coding agent helping the user in `{cwd_display}`.\n\
+             Always answer the user. For greetings, thanks, and other chitchat, reply briefly\n\
+             in plain text without tools — same as a normal conversation.\n\
+             Use tools (read, bash, edit, write) when the task needs inspecting or changing\n\
+             files or running commands. Prefer small, focused edits. Be concise.\n\
              Paths may be relative to the workspace cwd or absolute."
         )
     };

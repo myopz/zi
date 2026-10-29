@@ -56,7 +56,8 @@ cargo run -p zi-coding-agent -- --model deepseek-flash -p "用一句话概括本
 |------|------|
 | [入门](docs/GETTING_STARTED.md) | 环境、API Key、第一次运行 |
 | [架构](docs/ARCHITECTURE.md) | 双路径、依赖图、事件流 |
-| [CLI](docs/CLI.md) | 模式、参数、RPC |
+| [CLI](docs/CLI.md) | 模式、参数、RPC、web |
+| [Web UI](docs/WEB.md) | token 登录、SQLite、REST/WS |
 | [配置与路径](docs/CONFIGURATION.md) | `~/.zi/`、会话、环境变量 |
 | [扩展开发](docs/EXTENSIONS.md) | 从 0 写 WASM / host pack 到在 zi 里使用 |
 | [模型](docs/MODELS.md) | 内置目录、`.env`、`models.json` |
