@@ -210,6 +210,9 @@ async fn run_prompt_streaming(
         &before_payload,
     );
     apply_extension_ui_effects(&live_tx, &wasm_effects);
+    if let Some(name) = &wasm_effects.session_name {
+        let _ = runtime.session.lock().await.set_name(name.clone());
+    }
     let pack_effects = runtime
         .packs
         .read()

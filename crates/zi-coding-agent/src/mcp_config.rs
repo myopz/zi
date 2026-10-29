@@ -176,7 +176,7 @@ pub async fn connect_mcp_servers(
                         McpServerConfig::Http { .. } => "http".into(),
                     },
                     ok: true,
-                    detail: "connected".into(),
+                    detail: mcp_status_detail(&config, "connected"),
                     tool_count: count,
                 });
                 runtime.clients.push((name, client));
@@ -189,7 +189,7 @@ pub async fn connect_mcp_servers(
                         McpServerConfig::Http { .. } => "http".into(),
                     },
                     ok: false,
-                    detail: format!("{err:#}"),
+                    detail: mcp_status_detail(&config, &format!("{err:#}")),
                     tool_count: 0,
                 });
             }
@@ -197,6 +197,17 @@ pub async fn connect_mcp_servers(
     }
 
     (runtime, tools)
+}
+
+fn mcp_status_detail(config: &McpServerConfig, fallback: &str) -> String {
+    let description = match config {
+        McpServerConfig::Stdio { description, .. }
+        | McpServerConfig::Http { description, .. } => description.as_deref(),
+    };
+    match description.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(desc) => format!("{fallback} — {desc}"),
+        None => fallback.to_string(),
+    }
 }
 
 async fn connect_one(

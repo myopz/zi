@@ -49,6 +49,7 @@ impl Default for Keybindings {
 
 impl Keybindings {
     /// Lookup action for a normalized chord (`ctrl+c`, `escape`, …).
+    #[cfg_attr(not(test), allow(dead_code))] // exercised by unit tests; available to embedders
     pub fn action_for(&self, chord: &str) -> Option<&str> {
         self.map.get(chord).map(String::as_str)
     }

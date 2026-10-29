@@ -716,9 +716,12 @@ async fn dispatch_session_start(
         "session_name": session_name,
         "messages": messages,
     });
-    runtime
+    let wasm_effects = runtime
         .extensions
         .dispatch_hook(crate::extensions::ExtensionHook::SessionStart, &payload);
+    if let Some(name) = wasm_effects.session_name {
+        let _ = runtime.session.lock().await.set_name(name);
+    }
     let effects = runtime
         .packs
         .read()
@@ -727,7 +730,10 @@ async fn dispatch_session_start(
     if let Some(name) = effects.session_name {
         let _ = runtime.session.lock().await.set_name(name);
     }
-    effects.widget.flatten()
+    effects
+        .widget
+        .flatten()
+        .or(wasm_effects.widget.flatten())
 }
 
 async fn handle_session(runtime: &Arc<CliRuntime>) -> SlashOutcome {

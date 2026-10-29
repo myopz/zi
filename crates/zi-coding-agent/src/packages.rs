@@ -39,6 +39,8 @@ struct PackageManifest {
 }
 
 /// Collect package resource paths for a workspace (user packages always; project when trusted).
+///
+/// Uses the process agent dir from [`resolve_agent_dir`].
 pub fn discover_package_resources(cwd: &Path, include_project: bool) -> PackageResources {
     let agent_dir = resolve_agent_dir();
     discover_package_resources_from(cwd, &agent_dir, include_project)
@@ -82,26 +84,41 @@ pub fn discover_package_resources_from(
 
 /// Prompt paths from packages (user + project when include_project).
 pub fn prompt_paths_for(cwd: &Path, agent_dir: &Path) -> Vec<PathBuf> {
+    if *agent_dir == resolve_agent_dir() {
+        return discover_package_resources(cwd, true).prompts;
+    }
     discover_package_resources_from(cwd, agent_dir, true).prompts
 }
 
 /// Prompt paths from user-scope packages only.
 pub fn prompt_paths_user_only(agent_dir: &Path) -> Vec<PathBuf> {
+    if *agent_dir == resolve_agent_dir() {
+        return discover_package_resources(Path::new("."), false).prompts;
+    }
     discover_package_resources_from(Path::new("."), agent_dir, false).prompts
 }
 
 /// Skill paths from packages.
 pub fn skill_paths_for(cwd: &Path, agent_dir: &Path, include_project: bool) -> Vec<PathBuf> {
+    if *agent_dir == resolve_agent_dir() {
+        return discover_package_resources(cwd, include_project).skills;
+    }
     discover_package_resources_from(cwd, agent_dir, include_project).skills
 }
 
 /// Theme paths from packages.
 pub fn theme_paths_for(cwd: &Path, agent_dir: &Path, include_project: bool) -> Vec<PathBuf> {
+    if *agent_dir == resolve_agent_dir() {
+        return discover_package_resources(cwd, include_project).themes;
+    }
     discover_package_resources_from(cwd, agent_dir, include_project).themes
 }
 
 /// Extension paths from packages.
 pub fn extension_paths_for(cwd: &Path, agent_dir: &Path, include_project: bool) -> Vec<PathBuf> {
+    if *agent_dir == resolve_agent_dir() {
+        return discover_package_resources(cwd, include_project).extensions;
+    }
     discover_package_resources_from(cwd, agent_dir, include_project).extensions
 }
 

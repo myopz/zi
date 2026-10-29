@@ -71,11 +71,15 @@ pub async fn mount_mcp_tools(
 
 fn mcp_tool_to_mount(tool: &McpTool, options: &McpMountOptions) -> McpToolMount {
     let agent_name = format!("{}{}", options.name_prefix, tool.name);
+    let scoped = match options.namespace.as_deref() {
+        Some(ns) if !ns.is_empty() => format!("{ns}/{}", tool.name),
+        _ => tool.name.clone(),
+    };
     let description = tool
         .description
         .clone()
         .or(tool.title.clone())
-        .unwrap_or_else(|| format!("MCP tool {}", tool.name));
+        .unwrap_or_else(|| format!("MCP tool {scoped}"));
     let mcp_name = tool.name.clone();
     McpToolMount {
         descriptor: LlmToolDescriptor {

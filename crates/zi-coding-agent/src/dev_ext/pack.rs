@@ -64,6 +64,12 @@ impl PackHost {
             }
         }
 
+        tracing::debug!(
+            any_pack = enabled.any(),
+            loaded = loaded.len(),
+            "host packs instantiated"
+        );
+
         Self {
             packs: loaded,
             enabled_ids,
@@ -111,7 +117,11 @@ impl PackHost {
         }
         lines.push("Manifests:".into());
         for ext in &self.discovered {
-            let status = if ext.enabled { "on" } else { "off" };
+            let status = if self.is_enabled(&ext.id) || ext.enabled {
+                "on"
+            } else {
+                "off"
+            };
             let desc = ext.description.as_deref().unwrap_or("");
             let mut line = format!(
                 "  - {} [{}] {} api={}",
@@ -132,17 +142,23 @@ impl PackHost {
                 ));
             }
         }
-        if !self.commands.is_empty() {
+        if !self.commands().is_empty() {
             lines.push("Slash commands from packs:".into());
-            for cmd in &self.commands {
+            for cmd in self.commands() {
                 lines.push(format!("  /{} — {}", cmd.name, cmd.summary));
+            }
+        }
+        if !self.sources().is_empty() {
+            lines.push("Manifest roots:".into());
+            for src in self.sources() {
+                lines.push(format!("  {}", src.display()));
             }
         }
         lines.join("\n")
     }
 
     pub fn summary_line(&self) -> String {
-        let mut ids: Vec<_> = self.enabled_ids.iter().cloned().collect();
+        let mut ids: Vec<_> = self.enabled_ids().map(str::to_string).collect();
         ids.sort();
         if ids.is_empty() {
             "host packs: (none)".into()

@@ -35,7 +35,6 @@ pub fn load_wasm_extension(
     let mut store = Store::new(
         &engine,
         HostState {
-            path: path.to_path_buf(),
             pending_tools: Vec::new(),
             pending_hooks: Vec::new(),
             pending_commands: Vec::new(),
@@ -162,6 +161,27 @@ pub fn load_wasm_extension(
         .map_err(|e| e.to_string())?;
 
     linker
+        .func_wrap(
+            "zi_host",
+            "ui_set_session_name",
+            |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| -> Result<(), anyhow::Error> {
+                let json = read_guest_json(&mut caller, ptr, len)?;
+                let name = json
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.is_empty() {
+                    if let Ok(mut guard) = caller.data().ui_effects.write() {
+                        guard.session_name = Some(name);
+                    }
+                }
+                Ok(())
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    linker
         .func_wrap("zi_host", "host_api_version", || -> i32 {
             HOST_API_VERSION as i32
         })
@@ -216,7 +236,6 @@ fn read_guest_json(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Re
 }
 
 struct HostState {
-    path: PathBuf,
     pending_tools: Vec<Value>,
     pending_hooks: Vec<ExtensionHook>,
     pending_commands: Vec<(String, String)>,

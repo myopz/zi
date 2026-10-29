@@ -26,6 +26,7 @@
 //! | `emit_log` | `{ "level", "message" }` |
 //! | `ui_notify` | `{ "message" }` |
 //! | `ui_set_widget` | `{ "text": string\|null }` |
+//! | `ui_set_session_name` | `{ "name" }` |
 //! | `host_api_version` | `() -> i32` (no JSON; returns host ABI, currently `1`) |
 //!
 //! Hook delivery uses export `zi_on_hook(ptr, len)` when present; otherwise hooks are ignored.
@@ -399,19 +400,22 @@ impl ExtensionHost {
     }
 }
 
-/// Stub WASM extension: validates magic, documents ABI; registers no tools unless wasmtime runs init.
+/// Stub WASM extension when built without `wasm-extensions` (metadata only).
+#[cfg(not(feature = "wasm-extensions"))]
 pub struct WasmExtension {
     path: PathBuf,
     bytes: Vec<u8>,
     id: String,
 }
 
+#[cfg(not(feature = "wasm-extensions"))]
 impl WasmExtension {
     pub fn new(path: PathBuf, bytes: Vec<u8>, id: String) -> Self {
         Self { path, bytes, id }
     }
 }
 
+#[cfg(not(feature = "wasm-extensions"))]
 impl Extension for WasmExtension {
     fn id(&self) -> &str {
         &self.id
