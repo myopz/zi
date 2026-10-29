@@ -1,0 +1,50 @@
+[package]
+name = "zi-coding-agent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "zi coding agent CLI (print/json/rpc modes)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "zi"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = "0.1.88"
+base64 = "0.22.1"
+clap = { version = "4.5.37", features = ["derive"] }
+dotenvy = "0.15.7"
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "rustls-tls"] }
+zi-agent = { path = "../zi-agent" }
+zi-ai = { path = "../zi-ai" }
+zi-codemode = { path = "../zi-codemode" }
+# Build-time only. Default source: ~/.zi/host-extensions (override with
+# ZI_HOST_EXTENSIONS_PATH + scripts/link-host-extensions.sh). Symlink at repo
+# root `host-extensions` — Cargo cannot expand env in path deps.
+zi-host-extensions = { path = "../../host-extensions" }
+zi-mcp = { path = "../zi-mcp" }
+zi-session = { path = "../zi-session" }
+zi-telemetry = { path = "../zi-telemetry" }
+zi-tui = { path = "../zi-tui" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9.34"
+wasmtime = { version = "29.0.0", optional = true, default-features = true }
+tokio = { version = "1.44.2", features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+uuid = { workspace = true }
+which = { version = "7.0.3", optional = true }
+
+[dev-dependencies]
+wat = "1"
+
+[features]
+# Release/user bins must execute external ~/.zi/agent/extensions/*.wasm without source.
+default = ["wasm-extensions"]
+wasm-extensions = ["dep:wasmtime"]

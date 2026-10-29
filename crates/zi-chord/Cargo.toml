@@ -1,0 +1,26 @@
+[package]
+name = "zi-chord"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Chord v2 kernel for zi (hosts, contracts, store, link)"
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+parking_lot = "0.12.3"
+zi-telemetry = { path = "../zi-telemetry" }
+rusqlite = { version = "0.34.0", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[[example]]
+name = "01-local-host"
+path = "examples/01-local-host.rs"

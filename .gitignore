@@ -1,0 +1,44 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+**/*.rs.bk
+*.pdb
+
+# Generated / local
+.tmp/
+.artifacts/
+*.log
+*.cpuprofile
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.zed/
+*.swp
+*.swo
+*~
+
+# Agent / local config
+.zi/
+.zi_config/
+
+# Build-time link to host pack crate (default ~/.zi/host-extensions;
+# see scripts/link-host-extensions.sh / ZI_HOST_EXTENSIONS_PATH)
+/host-extensions
+
+# Coverage / test output
+coverage/
+.nyc_output/
+lcov.info
+
+# Misc
+out.jsonl
+out.html

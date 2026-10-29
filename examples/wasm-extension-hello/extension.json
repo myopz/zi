@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "hello",
+  "kind": "wasm",
+  "enabled": true,
+  "apiVersion": 1,
+  "description": "Minimal WASM ABI v1 guest (/hello + agent_end notify)",
+  "contributes": {
+    "prompts": ["prompts"]
+  },
+  "permissions": []
+}

@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zi-telemetry",
+    "crates/zi-session",
+    "crates/zi-ai",
+    "crates/zi-agent",
+    "crates/zi-mcp",
+    "crates/zi-codemode",
+    "crates/zi-tui",
+    "crates/zi-coding-agent",
+    "crates/zi-chord",
+    "crates/zi-durable",
+    "crates/zi-env",
+    "xtask",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+async-stream = "0.3.6"
+bytes = "1.10.1"
+futures = "0.3.31"
+reqwest = { version = "0.12.15", default-features = false, features = ["json", "stream", "rustls-tls"] }
+schemars = "0.8.22"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+thiserror = "2.0.12"
+tokio = { version = "1.44.2", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1.41"
+uuid = { version = "1.16.0", features = ["v7", "serde"] }

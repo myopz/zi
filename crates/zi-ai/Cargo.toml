@@ -1,0 +1,21 @@
+[package]
+name = "zi-ai"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "LLM providers and streaming events for zi (aligned with pi packages/ai)"
+
+[dependencies]
+async-stream = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+zi-telemetry = { path = "../zi-telemetry" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

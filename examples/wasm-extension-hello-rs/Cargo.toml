@@ -1,0 +1,23 @@
+# Standalone guest crate (not a workspace member). Builds ABI v1 extension.wasm for zi.
+# Empty [workspace] stops Cargo from treating the parent zi/Cargo.toml as this package's workspace.
+[workspace]
+
+[package]
+name = "wasm-extension-hello-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+rust-version = "1.85"
+description = "Minimal zi WASM ABI v1 guest implemented in Rust"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
