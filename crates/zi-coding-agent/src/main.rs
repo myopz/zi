@@ -263,12 +263,16 @@ async fn run_prompt_streaming(
     let session = runtime.session.clone();
     let status_cwd = runtime.cwd.display().to_string();
     let model = runtime.agent.model().await;
+    let context_extra = Arc::new(std::sync::Mutex::new(String::new()));
     let _ = live_tx.send(LiveUpdate::Status(StatusInfo {
         cwd: status_cwd.clone(),
         model: model.id.clone(),
         busy: true,
         queue_len: 0,
-        extra: String::new(),
+        extra: context_extra
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default(),
     }));
 
     let live_listener = live_tx.clone();
@@ -276,12 +280,60 @@ async fn run_prompt_streaming(
     let extensions = Arc::clone(&runtime.extensions);
     let tps_start = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
     let tps_start_listener = Arc::clone(&tps_start);
+    let context_extra_listener = Arc::clone(&context_extra);
+    let status_cwd_listener = status_cwd.clone();
+    let model_id_listener = model.id.clone();
     let listener = tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
             if let Err(err) = modes::handle_event(&session, &event).await {
                 tracing::warn!("session persist failed: {err:#}");
             }
             match &event {
+                AgentEvent::ContextUsage {
+                    estimated_tokens,
+                    compact_limit,
+                    folded_tool_results,
+                    cumulative_input,
+                    cumulative_output,
+                    near_limit,
+                    ..
+                } => {
+                    // Same compact-limit / fold / Σ accounting as zi-web ContextRing.
+                    let extra = format_context_status_extra(
+                        *estimated_tokens,
+                        *compact_limit,
+                        *cumulative_input,
+                        *cumulative_output,
+                        *folded_tool_results,
+                        *near_limit,
+                    );
+                    if let Ok(mut guard) = context_extra_listener.lock() {
+                        *guard = extra.clone();
+                    }
+                    let _ = live_listener.send(LiveUpdate::Status(StatusInfo {
+                        cwd: status_cwd_listener.clone(),
+                        model: model_id_listener.clone(),
+                        busy: true,
+                        queue_len: 0,
+                        extra,
+                    }));
+                }
+                AgentEvent::Compaction {
+                    summary,
+                    tokens_before,
+                    tokens_after,
+                    ..
+                } => {
+                    let brief = summary.lines().next().unwrap_or(summary).trim();
+                    let brief = if brief.chars().count() > 72 {
+                        format!("{}…", brief.chars().take(71).collect::<String>())
+                    } else {
+                        brief.to_string()
+                    };
+                    let _ = live_listener.send(LiveUpdate::System(format!(
+                        "compact {tokens_before}→{tokens_after} tok · {brief}"
+                    )));
+                }
                 AgentEvent::AgentStart => {
                     if let Ok(mut guard) = tps_start_listener.lock() {
                         *guard = Some(std::time::Instant::now());
@@ -408,12 +460,16 @@ async fn run_prompt_streaming(
     modes::join_or_abort_listener(listener).await;
 
     let model = runtime.agent.model().await;
+    let extra = context_extra
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
     let _ = live_tx.send(LiveUpdate::Status(StatusInfo {
         cwd: status_cwd,
         model: model.id,
         busy: false,
         queue_len: 0,
-        extra: String::new(),
+        extra,
     }));
 
     if let Err(err) = prompt_result {
@@ -544,6 +600,73 @@ async fn latest_turn_display(runtime: &CliRuntime) -> TurnDisplay {
         TurnDisplay::Empty
     } else {
         TurnDisplay::Text(text)
+    }
+}
+
+/// Compact status-line mirror of zi-web ContextRing (estimated vs compact limit + Σ).
+fn format_context_status_extra(
+    estimated_tokens: u64,
+    compact_limit: u64,
+    cumulative_input: u64,
+    cumulative_output: u64,
+    folded_tool_results: usize,
+    near_limit: bool,
+) -> String {
+    let pct = if compact_limit > 0 {
+        ((estimated_tokens.saturating_mul(100)) / compact_limit).min(999)
+    } else {
+        0
+    };
+    let mut extra = format!(
+        "ctx {pct}% · {}/{}",
+        format_token_short(estimated_tokens),
+        format_token_short(compact_limit)
+    );
+    if folded_tool_results > 0 {
+        extra.push_str(&format!(" · fold {folded_tool_results}"));
+    }
+    extra.push_str(&format!(
+        " · Σ{}→{}",
+        format_token_short(cumulative_input),
+        format_token_short(cumulative_output)
+    ));
+    if near_limit {
+        extra.push_str(" · near compact");
+    }
+    extra
+}
+
+fn format_token_short(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 10_000 {
+        format!("{}k", (n + 500) / 1_000)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+#[cfg(test)]
+mod context_status_tests {
+    use super::*;
+
+    #[test]
+    fn formats_context_ring_fields() {
+        let s = format_context_status_extra(22_000, 48_000, 70_000, 3_000, 2, false);
+        assert!(s.contains("ctx 45%"), "{s}");
+        assert!(s.contains("22.0k/48.0k") || s.contains("22k/48k"), "{s}");
+        assert!(s.contains("fold 2"), "{s}");
+        assert!(s.contains("Σ70.0k→3.0k") || s.contains("Σ70k→3.0k"), "{s}");
+        assert!(!s.contains("near compact"), "{s}");
+    }
+
+    #[test]
+    fn marks_near_compact() {
+        let s = format_context_status_extra(47_000, 48_000, 100, 10, 0, true);
+        assert!(s.contains("near compact"), "{s}");
+        assert!(s.contains("ctx 97%"), "{s}");
     }
 }
 

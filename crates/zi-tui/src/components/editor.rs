@@ -46,6 +46,8 @@ pub struct Editor {
     cwd: PathBuf,
     /// Max visible editor body lines (excluding suggestion popup).
     max_visible_lines: usize,
+    /// Max rows for the `/` / `@` suggestion popup (window scrolls with selection).
+    popup_max_rows: usize,
 }
 
 impl Editor {
@@ -66,6 +68,7 @@ impl Editor {
             history_draft: String::new(),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             max_visible_lines: 8,
+            popup_max_rows: 14,
         }
     }
 
@@ -78,6 +81,16 @@ impl Editor {
     pub fn set_slash_suggestions(&mut self, suggestions: Vec<SlashSuggestion>) {
         self.slash_suggestions = suggestions;
         self.sync_completion();
+    }
+
+    /// Caps how many suggestion rows are painted (selection still scrolls within the full list).
+    pub fn set_popup_max_rows(&mut self, rows: usize) {
+        self.popup_max_rows = rows.clamp(4, 40);
+    }
+
+    /// Whether a slash or path completion popup is open.
+    pub fn completion_open(&self) -> bool {
+        self.completion_kind.is_some()
     }
 
     /// Registers a callback invoked when the user submits the buffer.
@@ -634,8 +647,34 @@ fn list_path_completions(cwd: &Path, token: &str) -> Vec<String> {
         })
         .collect();
     out.sort();
-    out.truncate(12);
+    out.truncate(40);
     out
+}
+
+/// Visible slice of a completion list that keeps `selected` on-screen.
+fn completion_window(len: usize, selected: usize, max_show: usize) -> (usize, usize) {
+    if len == 0 {
+        return (0, 0);
+    }
+    let max_show = max_show.clamp(1, len);
+    let selected = selected.min(len - 1);
+    let mut start = selected.saturating_sub(max_show.saturating_sub(1));
+    if start + max_show > len {
+        start = len - max_show;
+    }
+    (start, max_show)
+}
+
+fn completion_mark(index: usize, selected: usize, more_above: bool, more_below: bool) -> &'static str {
+    if index == selected {
+        ">"
+    } else if more_above {
+        "↑"
+    } else if more_below {
+        "↓"
+    } else {
+        " "
+    }
 }
 
 impl Component for Editor {
@@ -644,19 +683,36 @@ impl Component for Editor {
         match self.completion_kind {
             Some(CompletionKind::Slash) => {
                 let filtered = self.filtered_slash();
-                let max_show = 6.min(filtered.len());
                 let selected = self.completion_index.unwrap_or(0);
-                for (i, item) in filtered.iter().take(max_show).enumerate() {
-                    let mark = if i == selected { ">" } else { " " };
+                let (start, count) =
+                    completion_window(filtered.len(), selected, self.popup_max_rows);
+                let end = start + count;
+                let more_above = start > 0;
+                let more_below = end < filtered.len();
+                for (i, item) in filtered.iter().enumerate().skip(start).take(count) {
+                    let mark = completion_mark(i, selected, i == start && more_above, i + 1 == end && more_below);
                     let row = format!(" {mark} /{}  {}", item.name, item.summary);
                     lines.push(truncate_to_width(&row, width));
                 }
             }
             Some(CompletionKind::Path) => {
-                let max_show = 6.min(self.path_suggestions.len());
                 let selected = self.completion_index.unwrap_or(0);
-                for (i, item) in self.path_suggestions.iter().take(max_show).enumerate() {
-                    let mark = if i == selected { ">" } else { " " };
+                let (start, count) = completion_window(
+                    self.path_suggestions.len(),
+                    selected,
+                    self.popup_max_rows,
+                );
+                let end = start + count;
+                let more_above = start > 0;
+                let more_below = end < self.path_suggestions.len();
+                for (i, item) in self
+                    .path_suggestions
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(count)
+                {
+                    let mark = completion_mark(i, selected, i == start && more_above, i + 1 == end && more_below);
                     let row = format!(" {mark} @{item}");
                     lines.push(truncate_to_width(&row, width));
                 }
@@ -993,5 +1049,43 @@ mod tests {
         assert_eq!(ed.buffer, "hello ");
         assert!(ed.kill_to_line_start());
         assert_eq!(ed.buffer, "");
+    }
+
+    #[test]
+    fn completion_window_keeps_selection_visible() {
+        assert_eq!(completion_window(0, 0, 6), (0, 0));
+        assert_eq!(completion_window(3, 1, 6), (0, 3));
+        assert_eq!(completion_window(10, 0, 6), (0, 6));
+        assert_eq!(completion_window(10, 9, 6), (4, 6));
+        assert_eq!(completion_window(10, 5, 6), (0, 6));
+    }
+
+    #[test]
+    fn slash_popup_respects_max_rows_and_scrolls() {
+        let mut ed = Editor::new("> ");
+        ed.set_popup_max_rows(4);
+        ed.set_slash_suggestions(
+            (0..12)
+                .map(|i| SlashSuggestion {
+                    name: format!("cmd{i}"),
+                    summary: "s".into(),
+                })
+                .collect(),
+        );
+        ed.buffer = "/".into();
+        ed.cursor = 1;
+        ed.sync_completion();
+        ed.completion_index = Some(0);
+        let lines = ed.render(80);
+        let slash_only: Vec<_> = lines.iter().filter(|l| l.contains("/cmd")).collect();
+        assert_eq!(slash_only.len(), 4);
+        assert!(slash_only[0].contains("/cmd0"));
+
+        ed.completion_index = Some(11);
+        let lines = ed.render(80);
+        let slash_only: Vec<_> = lines.iter().filter(|l| l.contains("/cmd")).collect();
+        assert_eq!(slash_only.len(), 4);
+        assert!(slash_only.last().unwrap().contains("/cmd11"));
+        assert!(slash_only.iter().any(|l| l.contains('↑')));
     }
 }

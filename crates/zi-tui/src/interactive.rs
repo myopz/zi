@@ -145,7 +145,7 @@ fn sync_redraw_counter(options: &InteractiveOptions, app: &crate::app::TuiApp) {
 
 fn present(
     app: &mut crate::app::TuiApp,
-    root: &InteractiveRoot,
+    root: &mut InteractiveRoot,
     options: &InteractiveOptions,
     width: usize,
 ) -> Result<(), TuiError> {
@@ -264,7 +264,7 @@ impl InteractiveRoot {
         lines
     }
 
-    fn frame(&self, width: usize, height: usize) -> Vec<String> {
+    fn frame(&mut self, width: usize, height: usize) -> Vec<String> {
         let height = height.max(3);
         let (body_h, widget_lines, editor_lines) = self.layout_parts(width, height);
         let body = self.body_lines(width);
@@ -281,13 +281,18 @@ impl InteractiveRoot {
     }
 
     /// Shared body/footer geometry so scroll math matches what `frame` paints.
-    fn layout_parts(&self, width: usize, height: usize) -> (usize, Vec<String>, Vec<String>) {
+    fn layout_parts(&mut self, width: usize, height: usize) -> (usize, Vec<String>, Vec<String>) {
         let height = height.max(3);
+        let widget_lines = self.widget_lines(width);
+        // Leave room for status + ~2 editor body lines; rest can be the `/` popup.
+        let popup_budget = height
+            .saturating_sub(2 + widget_lines.len() + 2)
+            .clamp(6, 24);
+        self.editor.set_popup_max_rows(popup_budget);
         let mut editor_lines = self.editor.render(width);
         if editor_lines.is_empty() {
             editor_lines.push("> \x1b[7m \x1b[27m".into());
         }
-        let widget_lines = self.widget_lines(width);
         // Pin widget + status + editor at the bottom; trim tall autocomplete from the top.
         let max_editor = height
             .saturating_sub(2 + widget_lines.len())
@@ -301,11 +306,11 @@ impl InteractiveRoot {
         (body_h, widget_lines, editor_lines)
     }
 
-    fn body_height(&self, width: usize) -> usize {
+    fn body_height(&mut self, width: usize) -> usize {
         self.layout_parts(width, self.term_height.max(3)).0
     }
 
-    fn max_scroll_from_bottom(&self, width: usize) -> usize {
+    fn max_scroll_from_bottom(&mut self, width: usize) -> usize {
         let body_h = self.body_height(width);
         let body_len = self.body_lines(width).len();
         body_len.saturating_sub(body_h)
@@ -345,7 +350,7 @@ impl InteractiveRoot {
         true
     }
 
-    fn page_step(&self, width: usize) -> usize {
+    fn page_step(&mut self, width: usize) -> usize {
         self.body_height(width).saturating_sub(1).max(1)
     }
 
@@ -508,7 +513,7 @@ where
     root.term_height = app.height() as usize;
     let mut width = app.width() as usize;
     let mut last_size = (width, root.term_height);
-    present(&mut app, &root, &options, width)?;
+    present(&mut app, &mut root, &options, width)?;
 
     let (live_tx, mut live_rx) = mpsc::unbounded_channel::<LiveUpdate>();
     let mut pending: Option<tokio::task::JoinHandle<Result<InteractiveSubmitResult, String>>> =
@@ -522,7 +527,7 @@ where
         let size = (width, root.term_height);
         if size != last_size {
             last_size = size;
-            present(&mut app, &root, &options, width)?;
+            present(&mut app, &mut root, &options, width)?;
         }
 
         // Drain live updates without blocking.
@@ -543,7 +548,7 @@ where
                 root.status.queue_len = root.queue.len();
             }
             root.scroll_from_bottom = 0;
-            present(&mut app, &root, &options, width)?;
+            present(&mut app, &mut root, &options, width)?;
         }
 
         // Harvest finished submit task.
@@ -604,7 +609,7 @@ where
                     }
                 }
                 root.status.queue_len = root.queue.len();
-                present(&mut app, &root, &options, width)?;
+                present(&mut app, &mut root, &options, width)?;
 
                 // Drain one queued prompt.
                 if !root.status.busy {
@@ -645,7 +650,7 @@ where
                             live_tx
                                 .send(LiveUpdate::System("abort requested…".into()))
                                 .ok();
-                            present(&mut app, &root, &options, width)?;
+                            present(&mut app, &mut root, &options, width)?;
                             continue;
                         }
                     }
@@ -653,7 +658,7 @@ where
                         let notice = root.copy_last_assistant();
                         root.messages
                             .push(Message::new(MessageRole::System, notice));
-                        present(&mut app, &root, &options, width)?;
+                        present(&mut app, &mut root, &options, width)?;
                         continue;
                     }
                 }
@@ -664,7 +669,7 @@ where
                     // Viewport scroll shifts nearly every body row. Index-based
                     // diffs then leave ghost lines that look like duplicates.
                     app.invalidate_screen();
-                    present(&mut app, &root, &options, width)?;
+                    present(&mut app, &mut root, &options, width)?;
                 }
                 continue;
             }
@@ -689,14 +694,14 @@ where
                             format!("queued ({} waiting)", root.queue.len()),
                         ));
                         root.editor.clear();
-                        present(&mut app, &root, &options, width)?;
+                        present(&mut app, &mut root, &options, width)?;
                         continue;
                     }
                     root.messages
                         .push(Message::new(MessageRole::User, text.clone()));
                     root.scroll_from_bottom = 0;
                     root.editor.clear();
-                    present(&mut app, &root, &options, width)?;
+                    present(&mut app, &mut root, &options, width)?;
                     start_prompt(
                         &mut root,
                         &mut app,
@@ -709,7 +714,7 @@ where
                     )?;
                 }
                 InputOutcome::RequestRender => {
-                    present(&mut app, &root, &options, width)?;
+                    present(&mut app, &mut root, &options, width)?;
                 }
                 InputOutcome::None => {}
             }
