@@ -101,9 +101,10 @@ flowchart BT
 - **探索预算**：自上次用户消息起，父会话 **`ls/find/grep`**（不含 `read`）超 10 次附加提示，超 16 次硬拒（仍允许 explore/edit/write/bash/read）；`explore_budget_block/warn = 0` 表示禁用。**explore 子循环关闭该预算**（容量靠 `max_turns`）；父会话**成功 explore 后重置**计数。`read` 不计预算，避免核对 Key paths 时连红。
 - **AGENTS / skills 税**：AGENTS.md 注入单文件 ~2KB、总块 ~4KB 截断并给 read 指针；skills 仅短目录（name + ≤120 字描述 + path）。
 - **稳定前缀**：system 为稳定路由说明；AGENTS/skills/append 进 `<session-context>` user，利于前缀缓存。
-- **主会话工具**：静态 read/grep/find/ls/bash/edit/write；**explore 延迟挂载**（schema 始终广告，首次调用时装入 active；也写入 SharedToolList 供 codemode）。bash 硬拦树探索。grep 优先 `rg`，缺省回退系统 `grep -R`。架构回答须引用工具读到的路径；UNKNOWN 仅在工具失败或路径确认缺失时使用。
+- **主会话工具**：静态 read/grep/find/ls/bash/edit/write；**explore 延迟挂载**（schema 始终广告，首次调用时装入 active；也写入 SharedToolList 供 codemode）。bash 硬拦树探索。grep 优先 `rg`，缺省回退系统 `grep -R`（排除 target/node_modules/.git 等；20s 超时；stdout 满 limit 即杀进程）。架构回答须引用工具读到的路径；UNKNOWN 仅在工具失败或路径确认缺失时使用。
 - **Read**：默认 120 行；行号每 10 行；截断提示带下一 `offset`。
-- **Web 步骤标签**：Read / Grepped / Search files / Listed / Explored / Ran command / Edited / Wrote；Thought。
+- **Web 步骤标签**：Read / Grepped / Search files / Listed / Explored / Ran command / Edited / Wrote；Thought。ContextRing 显示 estimated/compact limit%。
+- **TUI 状态栏**：同一 `ContextUsage` 事件写入 footer `extra`（`ctx N% · est/limit · fold · Σin→out`）；compact 时打一行 system 提示。Agent 侧预算/explore/fold 与 web 共用 `build_runtime`。
 - **Spill**：大 tool 输出 → `tool-outputs/` 指针。
 - **Cache 映射**：OpenAI-completions 读取 `prompt_cache_hit_tokens` → `usage.cache_read`；miss 计入 `input`（DeepSeek 会计）。Anthropic 仍用 `cache_control: ephemeral`。
 
