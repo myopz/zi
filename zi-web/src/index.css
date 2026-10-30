@@ -142,3 +142,12 @@
     @apply mt-3 mb-2 font-semibold;
   }
 }
+
+/* Radix ScrollArea sets display:table;min-width:100% on the viewport child,
+   which expands to intrinsic content width and lets sidebar rows spill under
+   the main pane (rename/delete buttons become unreachable). */
+[data-radix-scroll-area-viewport] > * {
+  display: block !important;
+  min-width: 0 !important;
+  max-width: 100%;
+}

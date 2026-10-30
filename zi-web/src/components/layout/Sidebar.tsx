@@ -14,7 +14,6 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverTip } from '@/components/ui/hover-tip'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { formatApiError } from '@/lib/api'
 import type { Session, User, Workspace } from '@/lib/types'
@@ -319,7 +318,7 @@ export function Sidebar({
                 <div
                   key={ws.id}
                   className={cn(
-                    'group flex w-full items-start gap-0.5 rounded-md hover:bg-accent/70',
+                    'group flex w-full min-w-0 items-start gap-0.5 rounded-md hover:bg-accent/70',
                     workspaceId === ws.id && selectedItemClass,
                   )}
                 >
@@ -456,8 +455,10 @@ export function Sidebar({
           <MessageSquarePlus className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <ScrollArea className="min-h-0 flex-1 px-2">
-        <div className="space-y-1 pb-3">
+      {/* Prefer native overflow here: Radix ScrollArea's table wrapper expands
+          past w-64 when session titles are long, covering the main pane. */}
+      <div className="min-h-0 min-w-0 w-full flex-1 overflow-x-hidden overflow-y-auto px-2">
+        <div className="w-full min-w-0 space-y-1 pb-3">
           {sessions.map((session) => {
             const title = sessionDisplayTitle(session)
             const selected = sessionId === session.id
@@ -467,7 +468,7 @@ export function Sidebar({
               <div
                 key={session.id}
                 className={cn(
-                  'group flex w-full items-start gap-1 rounded-md hover:bg-accent/70',
+                  'group flex w-full min-w-0 items-start gap-1 rounded-md hover:bg-accent/70',
                   selected && selectedItemClass,
                 )}
               >
@@ -525,7 +526,7 @@ export function Sidebar({
                           e.preventDefault()
                           beginRenameSession(session)
                         }}
-                        className="flex w-full min-w-0 flex-col gap-1 px-2 py-2 text-left"
+                        className="flex w-full min-w-0 flex-col gap-1 overflow-hidden px-2 py-2 text-left"
                       >
                         <span
                           className={cn(
@@ -585,7 +586,7 @@ export function Sidebar({
             </div>
           ) : null}
         </div>
-      </ScrollArea>
+      </div>
       <Separator className="shrink-0" />
       <div className="flex shrink-0 gap-1 p-2">
         <Button

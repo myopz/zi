@@ -59,8 +59,9 @@ export function HoverTip({
     return children
   }
 
+  // Keep layout classes (flex-1 / min-w-0) on a wrapper so long truncated
+  // children cannot expand a flex row past the sidebar width.
   const child = cloneElement(children, {
-    className: cn(children.props.className, className),
     'aria-describedby': open ? tipId : undefined,
     onMouseEnter: (e: MouseEvent) => {
       children.props.onMouseEnter?.(e)
@@ -82,7 +83,7 @@ export function HoverTip({
 
   return (
     <>
-      {child}
+      <div className={cn('min-w-0', className)}>{child}</div>
       {open
         ? createPortal(
             <div

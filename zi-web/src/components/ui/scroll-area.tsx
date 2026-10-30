@@ -12,7 +12,9 @@ export function ScrollArea({
       className={cn('relative overflow-hidden', className)}
       {...props}
     >
-      <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit]">
+      {/* Radix wraps children in display:table;min-width:100%, which expands to
+          intrinsic content width and lets sidebar rows spill under the main pane. */}
+      <ScrollAreaPrimitive.Viewport className="h-full w-full rounded-[inherit] [&>div]:!block [&>div]:!min-w-0">
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />
