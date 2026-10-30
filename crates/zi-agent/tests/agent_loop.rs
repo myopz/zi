@@ -588,3 +588,130 @@ async fn read_not_blocked_when_ls_budget_exhausted() {
         tool_result.content
     );
 }
+
+fn read_tool_named() -> Arc<dyn AgentTool> {
+    FnAgentTool::new(
+        "read",
+        "Read",
+        json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+        |_id, args, _on_update| async move {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            AgentToolResult::text(format!("contents of {path}"))
+        },
+    )
+}
+
+#[tokio::test]
+async fn recovers_narrative_please_use_tool_and_continues() {
+    let model = test_model();
+    let plan = assistant_text(
+        r#"目录已列出。请使用 `read` 工具读取 `Cargo.toml` 文件内容。
+请使用 `ls` 工具列出 `crates/` 目录的内容。"#,
+        StopReason::Stop,
+    );
+    let stream_fn = CannedStreamFn::new(
+        model.clone(),
+        vec![plan, assistant_text("文档写完了", StopReason::Stop)],
+    );
+    let config = AgentLoopConfig::new(model);
+    let mut context = AgentContext {
+        messages: Vec::new(),
+        tools: vec![read_tool_named(), ls_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 0,
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    let sink: Arc<dyn Fn(AgentEvent) + Send + Sync> =
+        Arc::new(move |event| events_clone.lock().expect("events").push(event));
+
+    run_agent_loop(
+        vec![user_message("写分析文档")],
+        &mut context,
+        config,
+        sink,
+        Arc::new(AtomicBool::new(false)),
+        stream_fn,
+    )
+    .await
+    .expect("loop");
+
+    let tool_starts: Vec<_> = events
+        .lock()
+        .expect("events")
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolExecutionStart { tool_name, .. } => Some(tool_name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_starts, vec!["read".to_string(), "ls".to_string()]);
+}
+
+#[tokio::test]
+async fn recovers_text_json_tool_call_like_ollama_qwen() {
+    // Reproduces: model writes explore as markdown/JSON text with stopReason=stop;
+    // without recovery the loop ends and never executes the tool.
+    let model = test_model();
+    let text_call = assistant_text(
+        r#"让我们先开始使用 explore 工具。
+
+```json
+{
+  "name": "explore",
+  "arguments": {
+    "goal": "Learn about the codebase"
+  }
+}
+```"#,
+        StopReason::Stop,
+    );
+    let stream_fn = CannedStreamFn::new(
+        model.clone(),
+        vec![text_call, assistant_text("analysis done", StopReason::Stop)],
+    );
+    let config = AgentLoopConfig::new(model);
+    let mut context = AgentContext {
+        messages: Vec::new(),
+        tools: vec![explore_ok_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 0,
+    };
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = events.clone();
+    let sink: Arc<dyn Fn(AgentEvent) + Send + Sync> =
+        Arc::new(move |event| events_clone.lock().expect("events").push(event));
+
+    run_agent_loop(
+        vec![user_message("分析项目架构并写文档")],
+        &mut context,
+        config,
+        sink,
+        Arc::new(AtomicBool::new(false)),
+        stream_fn,
+    )
+    .await
+    .expect("loop");
+
+    let tool_starts: Vec<_> = events
+        .lock()
+        .expect("events")
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolExecutionStart { tool_name, .. } => Some(tool_name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_starts, vec!["explore".to_string()]);
+
+    let final_text = context.messages.iter().rev().find_map(|m| match m {
+        Message::Assistant(a) => a.content.iter().find_map(|b| match b {
+            AssistantContentBlock::Text { text, .. } if text == "analysis done" => {
+                Some(text.clone())
+            }
+            _ => None,
+        }),
+        _ => None,
+    });
+    assert_eq!(final_text.as_deref(), Some("analysis done"));
+}
