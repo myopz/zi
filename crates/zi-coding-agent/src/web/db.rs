@@ -445,7 +445,11 @@ impl WebDb {
         }
         let id = Uuid::now_v7().to_string();
         let now = iso8601_now();
-        let title = title.unwrap_or("New session").to_string();
+        let title = title
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("Chat {}", &id[..8]));
         conn.execute(
             "INSERT INTO sessions
              (id, user_id, workspace_id, title, model, created_at, updated_at, revision)
@@ -571,6 +575,26 @@ impl WebDb {
         self.get_session(user_id, session_id)
     }
 
+    /// If the session still has a placeholder title, rename it from the first user prompt.
+    pub fn maybe_autotitle_session(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        prompt: &str,
+    ) -> Result<Option<SessionRow>> {
+        let Some(session) = self.get_session(user_id, session_id)? else {
+            return Ok(None);
+        };
+        if !is_placeholder_session_title(&session.title) {
+            return Ok(None);
+        }
+        let next = title_from_prompt(prompt);
+        if next.is_empty() || next.eq_ignore_ascii_case(&session.title) {
+            return Ok(None);
+        }
+        self.rename_session(user_id, session_id, &next)
+    }
+
     /// Update session model and bump `updated_at`.
     pub fn set_session_model(
         &self,
@@ -614,6 +638,36 @@ impl WebDb {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Delete all stored messages for a session and bump revision (web `/clear` / `/new`).
+    pub fn clear_messages(&self, user_id: &str, session_id: &str) -> Result<i64> {
+        let conn = self.conn.lock().expect("web db poisoned");
+        let tx = conn.unchecked_transaction()?;
+        let owned: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1 AND user_id = ?2",
+            params![session_id, user_id],
+            |r| r.get(0),
+        )?;
+        if owned == 0 {
+            bail!("session not found");
+        }
+        tx.execute(
+            "DELETE FROM messages WHERE session_id = ?1",
+            [session_id],
+        )?;
+        let now = iso8601_now();
+        tx.execute(
+            "UPDATE sessions SET revision = revision + 1, updated_at = ?1 WHERE id = ?2",
+            params![now, session_id],
+        )?;
+        let revision: i64 = tx.query_row(
+            "SELECT revision FROM sessions WHERE id = ?1",
+            [session_id],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(revision)
     }
 
     /// Append a finalized agent message and bump session revision.
@@ -708,6 +762,42 @@ fn default_workspace_name(cwd: &str) -> String {
         .to_string()
 }
 
+fn is_placeholder_session_title(title: &str) -> bool {
+    let t = title.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let lower = t.to_ascii_lowercase();
+    lower == "new session"
+        || lower == "untitled"
+        || lower == "session"
+        || (lower.starts_with("session ") && t.len() <= 16)
+        || (lower.starts_with("chat ") && t.len() <= 16)
+}
+
+fn title_from_prompt(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .trim();
+    if line.is_empty() {
+        return String::new();
+    }
+    const MAX: usize = 48;
+    let mut out = String::new();
+    for (i, ch) in line.chars().enumerate() {
+        if i >= MAX {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn iso8601_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -716,6 +806,26 @@ fn iso8601_now() -> String {
     let millis = now.subsec_millis();
     // Compact UTC-ish stamp without chrono dep (good enough for ordering/display).
     format!("{secs}.{millis:03}Z")
+}
+
+#[cfg(test)]
+mod session_title_tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_detection() {
+        assert!(is_placeholder_session_title("New session"));
+        assert!(is_placeholder_session_title("Chat 01a18a33"));
+        assert!(!is_placeholder_session_title("分析 pi 架构"));
+    }
+
+    #[test]
+    fn title_from_prompt_truncates() {
+        let long = "a".repeat(80);
+        let t = title_from_prompt(&long);
+        assert!(t.ends_with('…'));
+        assert!(t.chars().count() <= 49);
+    }
 }
 
 const SCHEMA_V1: &str = "

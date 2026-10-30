@@ -29,6 +29,10 @@ pub enum ToolExecutionMode {
 pub struct AgentContext {
     pub messages: Vec<AgentMessage>,
     pub tools: Vec<Arc<dyn AgentTool>>,
+    /// Tools available to mount on demand (name must appear in config.deferred_tool_names).
+    pub deferred_tools: Vec<Arc<dyn AgentTool>>,
+    /// Parent-session cheap-search tool calls since the last real user message.
+    pub explore_calls_since_user: usize,
 }
 
 impl std::fmt::Debug for AgentContext {
@@ -36,6 +40,11 @@ impl std::fmt::Debug for AgentContext {
         f.debug_struct("AgentContext")
             .field("messages", &self.messages)
             .field("tools", &format_args!("{} tool(s)", self.tools.len()))
+            .field(
+                "deferred_tools",
+                &format_args!("{} deferred", self.deferred_tools.len()),
+            )
+            .field("explore_calls_since_user", &self.explore_calls_since_user)
             .finish()
     }
 }
@@ -208,6 +217,28 @@ pub enum AgentEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
     },
+    /// Estimated context size before a model request (after folding).
+    ContextUsage {
+        estimated_tokens: u64,
+        context_window: u32,
+        /// Effective auto-compact trigger (`min(window×ratio, absolute)`).
+        compact_limit: u64,
+        folded_tool_results: usize,
+        cumulative_input: u64,
+        cumulative_output: u64,
+        /// True when estimated tokens crossed the effective compact limit.
+        near_limit: bool,
+    },
+    /// In-loop structural compaction truncated the in-memory transcript.
+    Compaction {
+        summary: String,
+        tokens_before: u64,
+        tokens_after: u64,
+        dropped_messages: usize,
+        /// Non-system messages kept after the summary (re-append to session after the marker).
+        #[serde(default)]
+        kept_messages: Vec<AgentMessage>,
+    },
 }
 
 /// Configuration for one agent loop run.
@@ -216,6 +247,28 @@ pub struct AgentLoopConfig {
     pub model: Model,
     pub stream_options: SimpleStreamOptions,
     pub tool_execution: ToolExecutionMode,
+    /// Token budget for recent tool results kept in full when building the LLM request.
+    pub keep_recent_tool_result_tokens: u64,
+    /// Fraction of `model.context_window` that contributes to the compact limit.
+    pub compact_threshold_ratio: f32,
+    /// Absolute token ceiling for auto-compact (0 disables the absolute cap).
+    pub compact_absolute_token_limit: u64,
+    /// When true, LLM/structural compact the in-memory transcript near the limit.
+    pub auto_compact: bool,
+    /// Token budget for trailing messages kept after auto/manual compaction.
+    pub keep_recent_message_tokens: u64,
+    /// Optional hard cap on assistant turns (used by explore/subagent loops).
+    pub max_turns: Option<usize>,
+    /// Directory for transcript archives written on compact (None disables).
+    pub transcript_archive_dir: Option<std::path::PathBuf>,
+    /// Tools held back until first requested (e.g. explore); merged into `tools` on demand.
+    pub deferred_tool_names: Vec<String>,
+    /// Soft warn after this many parent ls/find/grep calls since last user message.
+    /// `0` disables the warn hint. (`read` is not counted.)
+    pub explore_budget_warn: usize,
+    /// Hard-block parent ls/find/grep after this many calls since last user message.
+    /// `0` disables the hard block (used by explore subagents). (`read` is not counted.)
+    pub explore_budget_block: usize,
 }
 
 impl AgentLoopConfig {
@@ -225,6 +278,17 @@ impl AgentLoopConfig {
             model,
             stream_options: SimpleStreamOptions::default(),
             tool_execution: ToolExecutionMode::Parallel,
+            keep_recent_tool_result_tokens:
+                crate::context_budget::DEFAULT_KEEP_RECENT_TOOL_RESULT_TOKENS,
+            compact_threshold_ratio: crate::context_budget::DEFAULT_COMPACT_THRESHOLD_RATIO,
+            compact_absolute_token_limit: crate::context_budget::DEFAULT_COMPACT_ABSOLUTE_TOKEN_LIMIT,
+            auto_compact: true,
+            keep_recent_message_tokens: crate::context_budget::DEFAULT_KEEP_RECENT_MESSAGE_TOKENS,
+            max_turns: None,
+            transcript_archive_dir: None,
+            deferred_tool_names: Vec::new(),
+            explore_budget_warn: 10,
+            explore_budget_block: 16,
         }
     }
 }

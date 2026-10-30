@@ -29,6 +29,7 @@ pub struct Agent {
 struct AgentInner {
     messages: Vec<AgentMessage>,
     tools: Vec<Arc<dyn AgentTool>>,
+    deferred_tools: Vec<Arc<dyn AgentTool>>,
 }
 
 /// Options for constructing an [`Agent`].
@@ -36,6 +37,7 @@ pub struct AgentOptions {
     pub model: Model,
     pub stream_fn: Arc<dyn StreamFn>,
     pub tools: Vec<Arc<dyn AgentTool>>,
+    pub deferred_tools: Vec<Arc<dyn AgentTool>>,
     pub initial_messages: Vec<AgentMessage>,
     pub stream_options: zi_ai::SimpleStreamOptions,
     pub tool_execution: ToolExecutionMode,
@@ -49,6 +51,7 @@ impl AgentOptions {
             model: model.clone(),
             stream_fn,
             tools: Vec::new(),
+            deferred_tools: Vec::new(),
             initial_messages: Vec::new(),
             stream_options: zi_ai::SimpleStreamOptions::default(),
             tool_execution: ToolExecutionMode::Parallel,
@@ -60,16 +63,15 @@ impl AgentOptions {
 impl Agent {
     /// Create an agent with the given model and stream function.
     pub fn new(options: AgentOptions) -> Self {
-        let loop_config = AgentLoopConfig {
-            model: options.model,
-            stream_options: options.stream_options,
-            tool_execution: options.tool_execution,
-        };
+        let mut loop_config = AgentLoopConfig::new(options.model);
+        loop_config.stream_options = options.stream_options;
+        loop_config.tool_execution = options.tool_execution;
         let (event_tx, _) = broadcast::channel(options.event_capacity);
         Self {
             inner: Mutex::new(AgentInner {
                 messages: options.initial_messages,
                 tools: options.tools,
+                deferred_tools: options.deferred_tools,
             }),
             stream_fn: options.stream_fn,
             loop_config: Mutex::new(loop_config),
@@ -107,6 +109,20 @@ impl Agent {
         self.inner.lock().await.tools = tools;
     }
 
+    /// Replace deferred tools (mounted on first request by name).
+    pub async fn set_deferred_tools(&self, tools: Vec<Arc<dyn AgentTool>>) {
+        self.inner.lock().await.deferred_tools = tools;
+    }
+
+    /// Update loop config fields used for compaction / budgets / archives.
+    pub async fn configure_loop<F>(&self, f: F)
+    where
+        F: FnOnce(&mut AgentLoopConfig),
+    {
+        let mut cfg = self.loop_config.lock().await;
+        f(&mut cfg);
+    }
+
     /// Abort the current run, if any.
     pub fn abort(&self) {
         self.abort.store(true, Ordering::Relaxed);
@@ -129,6 +145,54 @@ impl Agent {
         self.inner.lock().await.messages = messages;
     }
 
+    /// Compact the in-memory transcript (LLM summary with structural fallback).
+    pub async fn compact_messages(&self) -> Option<crate::StructuralCompaction> {
+        let mut inner = self.inner.lock().await;
+        let cfg = self.loop_config.lock().await.clone();
+        let archive_path = cfg.transcript_archive_dir.as_ref().map(|dir| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            dir.join(format!("compact-{ts}.txt"))
+        });
+        let compacted = crate::summarize_compact(
+            &inner.messages,
+            crate::SummarizeCompactOptions {
+                keep_recent_tokens: cfg.keep_recent_message_tokens,
+                stream_fn: self.stream_fn.clone(),
+                model: cfg.model.clone(),
+                stream_options: cfg.stream_options.clone(),
+                abort: None,
+                archive_path,
+            },
+        )
+        .await?;
+        inner.messages = compacted.messages.clone();
+        let kept_messages: Vec<_> = compacted
+            .messages
+            .iter()
+            .filter(|m| !matches!(m, Message::System(_)))
+            .filter(|m| match m {
+                Message::User(u) => match &u.content {
+                    UserContent::Text(t) => !t.contains("<compaction>"),
+                    _ => true,
+                },
+                _ => true,
+            })
+            .cloned()
+            .collect();
+        let tx = self.event_tx.clone();
+        let _ = tx.send(AgentEvent::Compaction {
+            summary: compacted.summary.clone(),
+            tokens_before: compacted.tokens_before,
+            tokens_after: compacted.tokens_after,
+            dropped_messages: compacted.dropped_messages,
+            kept_messages,
+        });
+        Some(compacted)
+    }
+
     /// Start a new turn from text or structured messages.
     pub async fn prompt(&self, input: AgentPromptInput<'_>) -> Result<(), AgentError> {
         if self
@@ -145,6 +209,8 @@ impl Agent {
         let mut context = AgentContext {
             messages: inner.messages.clone(),
             tools: inner.tools.clone(),
+            deferred_tools: inner.deferred_tools.clone(),
+            explore_calls_since_user: 0,
         };
         drop(inner);
 
@@ -158,6 +224,8 @@ impl Agent {
         if result.is_ok() {
             let mut inner = self.inner.lock().await;
             inner.messages = context.messages;
+            inner.tools = context.tools;
+            inner.deferred_tools = context.deferred_tools;
         }
 
         self.running.store(false, Ordering::Relaxed);

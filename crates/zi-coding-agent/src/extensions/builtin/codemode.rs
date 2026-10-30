@@ -29,13 +29,16 @@ impl Extension for CodemodeBuiltin {
         let tool_list = Arc::clone(&self.tool_list);
         let tool = FnAgentTool::new(
             "codemode",
-            "Run a codemode script that calls registered tools via await tool(\"name\", {...}).",
+            "Run a short DSL script that calls registered tools. Each line must be \
+             `await tool(\"name\", { ...json... })` (a leading `const x =` is tolerated). \
+             Prefer calling explore/read/grep/find/ls directly as tools for exploration — \
+             do not wrap a single explore call in codemode.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "script": {
                         "type": "string",
-                        "description": "Codemode source (DSL lines or QuickJS when enabled)."
+                        "description": "One tool call per line, e.g. await tool(\"grep\", {\"pattern\": \"fn main\", \"glob\": \"*.rs\"}). No general JavaScript."
                     }
                 },
                 "required": ["script"],

@@ -20,7 +20,7 @@ export function ThinkingBlock({
         <ChevronRight
           className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-90')}
         />
-        <span>{streaming ? 'Thinking…' : 'Thinking'}</span>
+        <span>{streaming ? 'Thought…' : 'Thought'}</span>
       </button>
       {open ? (
         <pre className="max-h-64 overflow-auto border-t border-border/70 px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted-foreground">

@@ -1,4 +1,9 @@
-import type { AgentEvent, WsClientMessage, WsServerMessage } from '@/lib/types'
+import type {
+  AgentEvent,
+  SlashResultMessage,
+  WsClientMessage,
+  WsServerMessage,
+} from '@/lib/types'
 
 export type AgentSocketHandlers = {
   onEvent: (event: AgentEvent) => void
@@ -6,6 +11,7 @@ export type AgentSocketHandlers = {
   onSessionMeta?: (
     msg: Extract<WsServerMessage, { type: 'session_meta' }>,
   ) => void
+  onSlashResult?: (msg: SlashResultMessage) => void
   onError?: (message: string) => void
   onConnectionChange?: (connected: boolean) => void
 }
@@ -21,7 +27,9 @@ function isAgentEvent(msg: WsServerMessage): msg is AgentEvent {
     msg.type === 'message_end' ||
     msg.type === 'tool_execution_start' ||
     msg.type === 'tool_execution_update' ||
-    msg.type === 'tool_execution_end'
+    msg.type === 'tool_execution_end' ||
+    msg.type === 'context_usage' ||
+    msg.type === 'compaction'
   )
 }
 
@@ -89,6 +97,10 @@ export class AgentSocket {
       }
       if (msg.type === 'session_meta') {
         this.handlers.onSessionMeta?.(msg)
+        return
+      }
+      if (msg.type === 'slash_result') {
+        this.handlers.onSlashResult?.(msg)
         return
       }
       if (msg.type === 'error') {

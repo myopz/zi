@@ -106,7 +106,12 @@ fn read_optional_md(path: &Path) -> Option<(PathBuf, String)> {
     Some((path.to_path_buf(), trimmed.to_string()))
 }
 
-/// Format context files into a prompt section.
+/// Per-file soft cap for AGENTS/CLAUDE injection (~500 tokens at 4 chars/tok).
+pub const CONTEXT_FILE_MAX_CHARS: usize = 2_048;
+/// Total soft cap across all injected context files.
+pub const CONTEXT_BLOCK_MAX_CHARS: usize = 4_096;
+
+/// Format context files into a prompt section (truncated with read pointers).
 pub fn format_context_for_prompt(files: &[(PathBuf, String)]) -> String {
     if files.is_empty() {
         return String::new();
@@ -114,12 +119,34 @@ pub fn format_context_for_prompt(files: &[(PathBuf, String)]) -> String {
     let mut parts = vec![
         String::new(),
         "## Project context".into(),
-        "The following files provide standing instructions for this workspace.".into(),
+        "Standing instructions (truncated). Use read on the listed path for the full file.".into(),
     ];
+    let mut used = 0usize;
     for (path, body) in files {
+        if used >= CONTEXT_BLOCK_MAX_CHARS {
+            parts.push(String::new());
+            parts.push(format!(
+                "… further context files omitted; read {} if needed …",
+                path.display()
+            ));
+            break;
+        }
+        let remaining = CONTEXT_BLOCK_MAX_CHARS.saturating_sub(used);
+        let file_cap = CONTEXT_FILE_MAX_CHARS.min(remaining);
+        let (body_out, truncated) = if body.len() > file_cap {
+            (format!(
+                "{}\n… truncated; full path: {} — use read with offset/limit …",
+                &body[..file_cap],
+                path.display()
+            ), true)
+        } else {
+            (body.clone(), false)
+        };
         parts.push(String::new());
         parts.push(format!("### {}", path.display()));
-        parts.push(body.clone());
+        parts.push(body_out.clone());
+        used = used.saturating_add(body_out.len());
+        let _ = truncated;
     }
     parts.join("\n")
 }

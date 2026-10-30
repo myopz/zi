@@ -7,9 +7,10 @@ use zi_agent::{AgentTool, AgentToolResult};
 use serde_json::{json, Value};
 
 use super::resolve_in_workspace;
+use super::spill::{spill_if_large, DEFAULT_SPILL_THRESHOLD};
 
-const DEFAULT_MAX_LINES: usize = 2000;
-const DEFAULT_MAX_BYTES: usize = 256 * 1024;
+const DEFAULT_MAX_LINES: usize = 120;
+const DEFAULT_MAX_BYTES: usize = 64 * 1024;
 
 /// Read files under the workspace cwd.
 pub struct ReadTool {
@@ -30,7 +31,7 @@ impl AgentTool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file. Supports text files. For large files, use offset/limit (1-based lines)."
+        "Read one text file (default ≤120 lines; line numbers every 10 lines). Use offset/limit for more. Prefer over bash cat/sed. For multi-file discovery use grep/find or explore."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -102,21 +103,33 @@ impl AgentTool for ReadTool {
         let mut numbered: String = selected
             .iter()
             .enumerate()
-            .map(|(i, line)| format!("{:6}|{}", start + i + 1, line))
+            .map(|(i, line)| {
+                let line_no = start + i + 1;
+                // Cursor-style: number every 10th line (and the first shown line).
+                if i == 0 || line_no % 10 == 1 {
+                    format!("{line_no:6}|{line}")
+                } else {
+                    format!("{:6}|{line}", "")
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
-        if numbered.len() > DEFAULT_MAX_BYTES {
-            numbered.truncate(DEFAULT_MAX_BYTES);
-            numbered.push_str("\n… (truncated by byte limit)");
-        } else if start + selected.len() < lines.len() {
+        if start + selected.len() < lines.len() {
+            let next = start + selected.len() + 1;
             numbered.push_str(&format!(
-                "\n… (truncated: showing {} lines from line {})",
+                "\n… truncated; call read again with offset={next} limit={} (showing {} lines from line {})",
+                max_lines,
                 selected.len(),
                 start + 1
             ));
         }
 
-        AgentToolResult::text(numbered)
+        // Cap raw assembly, then spill oversized bodies so the transcript stays short.
+        if numbered.len() > DEFAULT_MAX_BYTES {
+            numbered.truncate(DEFAULT_MAX_BYTES);
+            numbered.push_str("\n… (truncated by byte limit)");
+        }
+        AgentToolResult::text(spill_if_large(&numbered, DEFAULT_SPILL_THRESHOLD))
     }
 }

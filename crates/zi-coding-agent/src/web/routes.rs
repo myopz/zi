@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/models", get(list_models))
         .route("/api/model", post(set_model))
         .route("/api/status", get(status))
+        .route("/api/slash-commands", get(list_slash_commands))
         .route("/ws", get(ws::ws_upgrade))
         .with_state(state)
 }
@@ -514,4 +515,42 @@ async fn status(
         "model": session.model,
         "revision": session.revision,
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommandsQuery {
+    workspace_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SlashCommandDto {
+    name: String,
+    summary: String,
+}
+
+/// Autocomplete hints for the web composer `/` menu (builtins + prompts + skills).
+async fn list_slash_commands(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<SlashCommandsQuery>,
+) -> Result<Json<Vec<SlashCommandDto>>, (StatusCode, Json<ErrorBody>)> {
+    let cwd = if let Some(workspace_id) = q.workspace_id.as_deref().filter(|s| !s.is_empty()) {
+        let ws = state
+            .db
+            .get_workspace(&user.id, workspace_id)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "workspace not found"))?;
+        resolve_workspace_cwd(&ws.cwd).map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?
+    } else {
+        default_workspace_cwd_for_user(&user.id)
+    };
+    let hints = crate::slash::autocomplete_hints(&cwd);
+    Ok(Json(
+        hints
+            .into_iter()
+            .map(|(name, summary)| SlashCommandDto { name, summary })
+            .collect(),
+    ))
 }

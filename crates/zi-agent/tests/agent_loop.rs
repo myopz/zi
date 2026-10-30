@@ -65,12 +65,16 @@ fn assistant_text(text: &str, stop: StopReason) -> AssistantMessage {
 }
 
 fn assistant_with_tool_call() -> AssistantMessage {
+    assistant_with_named_tool("echo", json!({ "value": "hi" }))
+}
+
+fn assistant_with_named_tool(name: &str, arguments: serde_json::Value) -> AssistantMessage {
     AssistantMessage {
         role: AssistantRole::Assistant,
         content: vec![AssistantContentBlock::ToolCall {
-            id: "call-1".into(),
-            name: "echo".into(),
-            arguments: json!({ "value": "hi" }),
+            id: format!("call-{name}"),
+            name: name.into(),
+            arguments,
             thought_signature: None,
             namespace: None,
             arguments_error: None,
@@ -161,6 +165,8 @@ async fn single_turn_without_tools() {
     let mut context = AgentContext {
         messages: Vec::new(),
         tools: vec![echo_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 0,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -217,6 +223,8 @@ async fn tool_call_then_final_text() {
     let mut context = AgentContext {
         messages: Vec::new(),
         tools: vec![echo_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 0,
     };
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_clone = events.clone();
@@ -260,6 +268,8 @@ async fn abort_before_second_stream_call() {
     let mut context = AgentContext {
         messages: Vec::new(),
         tools: vec![echo_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 0,
     };
     let abort = Arc::new(AtomicBool::new(false));
     let abort_set = abort.clone();
@@ -293,6 +303,7 @@ async fn agent_prompt_subscribes_and_updates_transcript() {
     let agent = Agent::new(AgentOptions {
         model,
         stream_fn,
+        deferred_tools: Vec::new(),
         tools: vec![echo_tool()],
         initial_messages: Vec::new(),
         stream_options: Default::default(),
@@ -316,4 +327,264 @@ async fn agent_prompt_subscribes_and_updates_transcript() {
 
     let messages = agent.messages().await;
     assert_eq!(messages.len(), 2);
+}
+
+#[tokio::test]
+async fn compact_messages_dedupes_repeated_architecture_edits() {
+    use zi_ai::{
+        TextContent, TextContentKind, ToolResultContentBlock, ToolResultMessage, ToolResultRole,
+    };
+
+    let edit_line =
+        "Updated /Users/zhangjianlong/workspace/forkmess/pi/ARCHITECTURE.md (1 edit(s))";
+    let mut initial = vec![user_message("write ARCHITECTURE.md")];
+    for i in 0..11i64 {
+        initial.push(Message::ToolResult(ToolResultMessage {
+            role: ToolResultRole::ToolResult,
+            tool_call_id: format!("e{i}"),
+            tool_name: "edit".into(),
+            content: vec![ToolResultContentBlock::Text(TextContent {
+                kind: TextContentKind::Text,
+                text: edit_line.into(),
+                text_signature: None,
+            })],
+            details: None,
+            is_error: false,
+            timestamp: i,
+        }));
+        initial.push(Message::ToolResult(ToolResultMessage {
+            role: ToolResultRole::ToolResult,
+            tool_call_id: format!("b{i}"),
+            tool_name: "bash".into(),
+            content: vec![ToolResultContentBlock::Text(TextContent {
+                kind: TextContentKind::Text,
+                text: format!("noise-{}", "x".repeat(400)),
+                text_signature: None,
+            })],
+            details: None,
+            is_error: false,
+            timestamp: i,
+        }));
+    }
+
+    let model = test_model();
+    let summary = "## Goal\nwrite ARCHITECTURE.md\n\n## Progress\n### Done\n- [x] Updated ARCHITECTURE.md\n\n## Next Steps\n1. stop\n";
+    let agent = Agent::new(AgentOptions {
+        model: model.clone(),
+        stream_fn: CannedStreamFn::new(model, vec![assistant_text(summary, StopReason::Stop)]),
+        deferred_tools: Vec::new(),
+        tools: vec![],
+        initial_messages: initial,
+        stream_options: Default::default(),
+        tool_execution: ToolExecutionMode::Parallel,
+        event_capacity: 32,
+    });
+    agent
+        .configure_loop(|cfg| {
+            cfg.keep_recent_message_tokens = 200;
+        })
+        .await;
+
+    let compacted = agent.compact_messages().await.expect("should compact");
+    assert!(
+        compacted.summary.contains("ARCHITECTURE.md") || compacted.summary.contains("## Goal"),
+        "summary={}",
+        compacted.summary
+    );
+
+    let messages = agent.messages().await;
+    let edit_count = messages
+        .iter()
+        .filter(|m| match m {
+            Message::User(u) => match &u.content {
+                UserContent::Text(t) => {
+                    t.contains("<pinned-edit>") && t.contains("ARCHITECTURE.md")
+                }
+                _ => false,
+            },
+            _ => false,
+        })
+        .count();
+    assert_eq!(
+        edit_count, 1,
+        "Agent::compact_messages must leave a single ARCHITECTURE pinned note"
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|m| matches!(m, Message::ToolResult(tr) if tr.tool_name == "edit")),
+        "pinned edits must not remain as orphan toolResults"
+    );
+}
+
+fn read_tool() -> Arc<dyn AgentTool> {
+    FnAgentTool::new(
+        "read",
+        "Read a file",
+        json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        |_id, _args, _on_update| async move { AgentToolResult::text("file body") },
+    )
+}
+
+fn explore_ok_tool() -> Arc<dyn AgentTool> {
+    FnAgentTool::new(
+        "explore",
+        "Explore",
+        json!({ "type": "object", "properties": { "goal": { "type": "string" } } }),
+        |_id, _args, _on_update| async move {
+            AgentToolResult::text("Explore summary\n\nKey paths:\n- a.ts")
+        },
+    )
+}
+
+#[tokio::test]
+async fn explore_budget_zero_allows_cheap_search_when_exhausted() {
+    let model = test_model();
+    let stream_fn = CannedStreamFn::new(
+        model.clone(),
+        vec![
+            assistant_with_named_tool("read", json!({ "path": "a.ts" })),
+            assistant_text("ok", StopReason::Stop),
+        ],
+    );
+    let mut config = AgentLoopConfig::new(model);
+    config.explore_budget_block = 0;
+    config.explore_budget_warn = 0;
+    let mut context = AgentContext {
+        messages: Vec::new(),
+        tools: vec![read_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 99,
+    };
+    let sink: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
+    run_agent_loop(
+        vec![user_message("read")],
+        &mut context,
+        config,
+        sink,
+        Arc::new(AtomicBool::new(false)),
+        stream_fn,
+    )
+    .await
+    .expect("loop");
+
+    let tool_result = context
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResult(tr) => Some(tr),
+            _ => None,
+        })
+        .expect("tool result");
+    assert!(
+        !tool_result.is_error,
+        "budget 0 must not block: {:?}",
+        tool_result.content
+    );
+}
+
+#[tokio::test]
+async fn successful_explore_resets_cheap_search_counter() {
+    let model = test_model();
+    let stream_fn = CannedStreamFn::new(
+        model.clone(),
+        vec![
+            assistant_with_named_tool("explore", json!({ "goal": "arch" })),
+            assistant_with_named_tool("read", json!({ "path": "a.ts" })),
+            assistant_text("done", StopReason::Stop),
+        ],
+    );
+    let mut config = AgentLoopConfig::new(model);
+    config.explore_budget_block = 12;
+    config.tool_execution = ToolExecutionMode::Sequential;
+    let mut context = AgentContext {
+        messages: Vec::new(),
+        tools: vec![explore_ok_tool(), read_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 12,
+    };
+    let sink: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
+    run_agent_loop(
+        vec![user_message("explore then read")],
+        &mut context,
+        config,
+        sink,
+        Arc::new(AtomicBool::new(false)),
+        stream_fn,
+    )
+    .await
+    .expect("loop");
+
+    let reads: Vec<_> = context
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult(tr) if tr.tool_name == "read" => Some(tr),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reads.len(), 1);
+    assert!(
+        !reads[0].is_error,
+        "read after explore must succeed; got {:?}",
+        reads[0].content
+    );
+    assert_eq!(
+        context.explore_calls_since_user, 0,
+        "explore resets to 0; read is not budgeted so counter stays 0"
+    );
+}
+
+fn ls_tool() -> Arc<dyn AgentTool> {
+    FnAgentTool::new(
+        "ls",
+        "List",
+        json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+        |_id, _args, _on_update| async move { AgentToolResult::text("dir/") },
+    )
+}
+
+#[tokio::test]
+async fn read_not_blocked_when_ls_budget_exhausted() {
+    let model = test_model();
+    let stream_fn = CannedStreamFn::new(
+        model.clone(),
+        vec![
+            assistant_with_named_tool("read", json!({ "path": "a.ts" })),
+            assistant_text("ok", StopReason::Stop),
+        ],
+    );
+    let mut config = AgentLoopConfig::new(model);
+    config.explore_budget_block = 12;
+    let mut context = AgentContext {
+        messages: Vec::new(),
+        tools: vec![read_tool(), ls_tool()],
+        deferred_tools: Vec::new(),
+        explore_calls_since_user: 12,
+    };
+    let sink: Arc<dyn Fn(AgentEvent) + Send + Sync> = Arc::new(|_| {});
+    run_agent_loop(
+        vec![user_message("read known path")],
+        &mut context,
+        config,
+        sink,
+        Arc::new(AtomicBool::new(false)),
+        stream_fn,
+    )
+    .await
+    .expect("loop");
+
+    let tool_result = context
+        .messages
+        .iter()
+        .find_map(|m| match m {
+            Message::ToolResult(tr) => Some(tr),
+            _ => None,
+        })
+        .expect("tool result");
+    assert!(
+        !tool_result.is_error && tool_result.tool_name == "read",
+        "read must not be budget-blocked: {:?}",
+        tool_result.content
+    );
 }

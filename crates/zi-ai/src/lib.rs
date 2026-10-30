@@ -27,10 +27,10 @@ pub use event_stream::{
 };
 pub use stream::{stream_simple, stream_transcript};
 pub use types::{
-    AssistantContentBlock, AssistantMessage, AssistantMessageEvent, Context, DoneStopReason,
-    ErrorStopReason, ImageContent, KnownApi, Message, Model, ModelCost, SimpleStreamOptions,
-    StopReason, StreamOptions, SystemContent, SystemMessage, SystemRole, TextContent, TextContentKind,
-    ThinkingContent, Tool, ToolCall, ToolChoice, ToolReference, ToolResultContentBlock,
-    ToolResultMessage, ToolResultRole, TranscriptContext, Usage, UserContent, UserContentBlock,
-    UserMessage, UserRole,
+    new_pending_assistant, AssistantContentBlock, AssistantMessage, AssistantMessageEvent,
+    AssistantRole, Context, DoneStopReason, ErrorStopReason, ImageContent, KnownApi, Message, Model,
+    ModelCost, SimpleStreamOptions, StopReason, StreamOptions, SystemContent, SystemMessage,
+    SystemRole, TextContent, TextContentKind, ThinkingContent, Tool, ToolCall, ToolChoice,
+    ToolReference, ToolResultContentBlock, ToolResultMessage, ToolResultRole, TranscriptContext,
+    Usage, UserContent, UserContentBlock, UserMessage, UserRole,
 };

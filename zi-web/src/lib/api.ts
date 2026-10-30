@@ -5,6 +5,7 @@ import type {
   Session,
   SessionDetail,
   SessionStatus,
+  SlashCommand,
   User,
   Workspace,
 } from '@/lib/types'
@@ -199,4 +200,13 @@ export function setModel(input: {
 export function getStatus(sessionId?: string): Promise<SessionStatus> {
   const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
   return request(`/api/status${qs}`)
+}
+
+export function listSlashCommands(
+  workspaceId?: string | null,
+): Promise<SlashCommand[]> {
+  const qs = workspaceId
+    ? `?workspaceId=${encodeURIComponent(workspaceId)}`
+    : ''
+  return request(`/api/slash-commands${qs}`)
 }

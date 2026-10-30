@@ -1,15 +1,15 @@
-//! grep tool: search file contents (requires ripgrep on PATH).
+//! grep tool: search file contents (ripgrep preferred; falls back to `grep -R`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use zi_agent::{AgentToolResult, FnAgentTool};
 use tokio::process::Command;
 
 use super::path::resolve_to_cwd;
+use super::spill::{spill_if_large, DEFAULT_SPILL_THRESHOLD};
 
 const DEFAULT_LIMIT: usize = 100;
-const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 
 static PARAMETERS: &str = r#"{
   "type": "object",
@@ -29,7 +29,7 @@ static PARAMETERS: &str = r#"{
 pub fn grep_tool(cwd: PathBuf) -> Arc<FnAgentTool> {
     FnAgentTool::new(
         "grep",
-        "Search file contents for a pattern via ripgrep (rg). Respects .gitignore when rg is used.",
+        "Grepped: search file contents with ripgrep when available, else system grep (cheap; prefer over bash). Default limit 100. Use path/glob to narrow. For wide unknown exploration use explore.",
         serde_json::from_str(PARAMETERS).expect("grep parameters schema"),
         move |_id, args, _on_update| {
             let cwd = cwd.clone();
@@ -67,7 +67,27 @@ async fn run_grep(cwd: &PathBuf, args: serde_json::Value) -> AgentToolResult {
         .unwrap_or(0) as usize;
     let glob = args.get("glob").and_then(|v| v.as_str());
 
-    run_rg(
+    if let Some(rg) = resolve_rg_bin() {
+        match run_rg(
+            &rg,
+            &search_path,
+            pattern,
+            glob,
+            ignore_case,
+            literal,
+            context,
+            limit,
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(err) => {
+                tracing::warn!(%err, "rg failed; falling back to system grep");
+            }
+        }
+    }
+
+    run_system_grep(
         &search_path,
         pattern,
         glob,
@@ -79,16 +99,44 @@ async fn run_grep(cwd: &PathBuf, args: serde_json::Value) -> AgentToolResult {
     .await
 }
 
+/// Resolve a ripgrep binary: PATH first, then common install locations.
+pub(crate) fn resolve_rg_bin() -> Option<PathBuf> {
+    if which_ok("rg") {
+        return Some(PathBuf::from("rg"));
+    }
+    for candidate in [
+        "/opt/homebrew/bin/rg",
+        "/usr/local/bin/rg",
+        "/usr/bin/rg",
+    ] {
+        let path = Path::new(candidate);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    None
+}
+
+fn which_ok(name: &str) -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {name} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 async fn run_rg(
-    search_path: &PathBuf,
+    rg: &Path,
+    search_path: &Path,
     pattern: &str,
     glob: Option<&str>,
     ignore_case: bool,
     literal: bool,
     context: usize,
     limit: usize,
-) -> AgentToolResult {
-    let mut cmd = Command::new("rg");
+) -> Result<AgentToolResult, String> {
+    let mut cmd = Command::new(rg);
     cmd.arg("--line-number")
         .arg("--no-heading")
         .arg("--color=never")
@@ -112,35 +160,110 @@ async fn run_rg(
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.status.code() == Some(127) || stderr.contains("No such file") {
-                return AgentToolResult::error(
-                    "ripgrep (rg) not found on PATH; install ripgrep to use grep",
-                );
+            if output.status.code() == Some(127)
+                || stderr.contains("No such file or directory")
+            {
+                return Err("rg not executable".into());
             }
             if !output.status.success() && output.status.code() != Some(1) {
-                return AgentToolResult::error(format!("rg failed: {stderr}"));
+                return Err(format!("rg failed: {stderr}"));
             }
-            truncate_output(stdout.trim_end())
+            Ok(truncate_output(stdout.trim_end()))
         }
-        Err(err) => AgentToolResult::error(format!("failed to run rg: {err}")),
+        Err(err) => Err(format!("failed to run rg: {err}")),
     }
+}
+
+async fn run_system_grep(
+    search_path: &Path,
+    pattern: &str,
+    glob: Option<&str>,
+    ignore_case: bool,
+    literal: bool,
+    context: usize,
+    limit: usize,
+) -> AgentToolResult {
+    let mut cmd = Command::new("grep");
+    cmd.arg("-RHn").arg("--color=never");
+    if ignore_case {
+        cmd.arg("-i");
+    }
+    if literal {
+        cmd.arg("-F");
+    } else {
+        cmd.arg("-E");
+    }
+    if context > 0 {
+        cmd.arg("-C").arg(context.to_string());
+    }
+    if let Some(g) = glob {
+        // GNU/BSD grep --include; ignore if unsupported (still search, noisier).
+        cmd.arg(format!("--include={g}"));
+    }
+    cmd.arg(pattern).arg(search_path);
+
+    match cmd.output().await {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // 0 = matches, 1 = no matches; other = error (unless only --include warn).
+            if !output.status.success()
+                && output.status.code() != Some(1)
+                && stdout.trim().is_empty()
+            {
+                return AgentToolResult::error(format!(
+                    "grep fallback failed (rg unavailable): {stderr}"
+                ));
+            }
+            let text = limit_match_lines(stdout.trim_end(), limit);
+            let mut body = if text.is_empty() {
+                "(no matches)".to_string()
+            } else {
+                text
+            };
+            body.push_str("\n\n[grep] used system grep fallback (ripgrep not on PATH)");
+            truncate_output(&body)
+        }
+        Err(err) => AgentToolResult::error(format!(
+            "ripgrep and system grep unavailable: {err}"
+        )),
+    }
+}
+
+fn limit_match_lines(text: &str, limit: usize) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= limit {
+        return text.to_string();
+    }
+    let mut out = lines[..limit].join("\n");
+    out.push_str(&format!("\n… truncated to {limit} lines"));
+    out
 }
 
 fn truncate_output(text: &str) -> AgentToolResult {
     if text.is_empty() {
         return AgentToolResult::text("(no matches)");
     }
-    let bytes = text.as_bytes();
-    if bytes.len() <= MAX_OUTPUT_BYTES {
-        return AgentToolResult::text(text);
+    AgentToolResult::text(spill_if_large(text, DEFAULT_SPILL_THRESHOLD))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_match_lines_caps() {
+        let text = (0..20).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n");
+        let limited = limit_match_lines(&text, 5);
+        assert_eq!(limited.lines().count(), 6); // 5 + truncated notice
+        assert!(limited.contains("truncated"));
     }
-    let mut end = MAX_OUTPUT_BYTES;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
+
+    #[test]
+    fn resolve_rg_bin_does_not_panic() {
+        let _ = resolve_rg_bin();
     }
-    AgentToolResult::text(format!(
-        "{}\n\n[truncated at {}KB]",
-        &text[..end],
-        MAX_OUTPUT_BYTES / 1024
-    ))
 }

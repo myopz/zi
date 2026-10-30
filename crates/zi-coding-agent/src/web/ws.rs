@@ -208,6 +208,22 @@ async fn run_prompt(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "session not found".to_string())?;
 
+    // First real prompt: replace "New session" with a short title from the message.
+    if !message.trim().starts_with('/') {
+        if let Ok(Some(updated)) = state
+            .db
+            .maybe_autotitle_session(&user.id, session_id, message)
+        {
+            let _ = out_tx.send(json!({
+                "type": "session_meta",
+                "sessionId": session_id,
+                "revision": updated.revision,
+                "title": updated.title,
+                "model": updated.model.clone(),
+            }));
+        }
+    }
+
     let handle = state
         .runtimes
         .get_or_create(state, &user.id, session_id)
@@ -217,6 +233,61 @@ async fn run_prompt(
     let rt = handle.runtime.lock().await;
     if rt.agent.is_running() {
         return Err("agent already running".into());
+    }
+
+    // Same as TUI: `/…` is handled locally and must not hit the LLM.
+    let mut prompt_text = message.to_string();
+    if message.trim().starts_with('/') {
+        match crate::slash::try_handle_slash(message, &rt).await {
+            Some(crate::slash::SlashOutcome::Prompt(expanded)) => {
+                prompt_text = expanded;
+            }
+            Some(crate::slash::SlashOutcome::Notice(text)) => {
+                emit_slash_notice(state, user, session_id, &rt, out_tx, &text).await?;
+                return Ok(());
+            }
+            Some(crate::slash::SlashOutcome::ResetUi {
+                notice,
+                seed,
+                widget: _,
+            }) => {
+                let revision = state
+                    .db
+                    .clear_messages(&user.id, session_id)
+                    .map_err(|e| e.to_string())?;
+                let _ = out_tx.send(json!({
+                    "type": "slash_result",
+                    "sessionId": session_id,
+                    "kind": "reset",
+                    "text": notice,
+                    "seed": seed
+                        .iter()
+                        .map(|s| json!({
+                            "role": match s.role {
+                                zi_tui::MessageRole::User => "user",
+                                zi_tui::MessageRole::Assistant => "assistant",
+                                zi_tui::MessageRole::System => "system",
+                                zi_tui::MessageRole::Tool => "tool",
+                                zi_tui::MessageRole::Thinking => "thinking",
+                            },
+                            "content": s.content,
+                        }))
+                        .collect::<Vec<_>>(),
+                    "revision": revision,
+                }));
+                return Ok(());
+            }
+            Some(crate::slash::SlashOutcome::Quit) => {
+                let _ = out_tx.send(json!({
+                    "type": "slash_result",
+                    "sessionId": session_id,
+                    "kind": "notice",
+                    "text": "`/quit` is only available in the TUI. Close the browser tab or log out instead.",
+                }));
+                return Ok(());
+            }
+            None => {}
+        }
     }
 
     let mut rx = rt.agent.subscribe();
@@ -252,13 +323,45 @@ async fn run_prompt(
 
     let result = rt
         .agent
-        .prompt(AgentPromptInput::Text(message))
+        .prompt(AgentPromptInput::Text(&prompt_text))
         .await
         .map_err(|e| e.to_string());
     rt.agent.wait_for_idle().await;
     drop(rt);
     join_or_abort_listener(forward).await;
     result
+}
+
+async fn emit_slash_notice(
+    state: &AppState,
+    user: &AuthUser,
+    session_id: &str,
+    rt: &crate::modes::CliRuntime,
+    out_tx: &mpsc::UnboundedSender<Value>,
+    text: &str,
+) -> Result<(), String> {
+    // `/model` may have switched the live agent — mirror into SQLite + UI.
+    let model = rt.agent.model().await;
+    if let Ok(Some(updated)) = state
+        .db
+        .set_session_model(&user.id, session_id, &model.id)
+    {
+        let _ = out_tx.send(json!({
+            "type": "session_meta",
+            "sessionId": session_id,
+            "revision": updated.revision,
+            "model": model.id,
+            "title": updated.title,
+        }));
+    }
+    let _ = out_tx.send(json!({
+        "type": "slash_result",
+        "sessionId": session_id,
+        "kind": "notice",
+        "text": text,
+        "model": model.id,
+    }));
+    Ok(())
 }
 
 async fn run_abort(

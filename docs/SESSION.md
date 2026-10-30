@@ -38,7 +38,7 @@ $ZI_AGENT_DIR/sessions/--<encoded-cwd>--/<timestamp>_<session-id>.jsonl
 | `session` | Header（`version: 3`） |
 | `message` | 用户 / 助手 / toolResult 等 |
 | `model_change` | 模型切换 |
-| `compaction` | 压缩标记 |
+| `compaction` | 压缩标记：投影时丢弃该行之前的 message，注入 summary，再读取后续 message |
 | … | 见 `zi_session::SessionEntry` |
 
 ## 迁移

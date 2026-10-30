@@ -45,6 +45,11 @@ export type ModelsResponse = {
   current?: string
 }
 
+export type SlashCommand = {
+  name: string
+  summary: string
+}
+
 export type SessionStatus = {
   sessionId?: string
   busy: boolean
@@ -117,7 +122,8 @@ export type AgentMessage =
       model: string
       responseModel?: string
       responseId?: string
-      usage: unknown
+      /** Provider usage for this model call (camelCase from zi-ai). */
+      usage: AssistantUsage | unknown
       stopReason: string
       errorMessage?: string
       rawStopReason?: string
@@ -133,6 +139,22 @@ export type AgentMessage =
       isError: boolean
       timestamp: number
     }
+
+/** One model-turn token accounting (matches zi-ai Usage camelCase JSON). */
+export type AssistantUsage = {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  totalTokens: number
+  cost?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+    total?: number
+  }
+}
 
 export type AssistantMessageEvent =
   | { type: 'start'; partial: AgentMessage }
@@ -228,11 +250,51 @@ export type AgentEvent =
       is_error: boolean
       duration_ms?: number
     }
+  | {
+      type: 'context_usage'
+      estimated_tokens: number
+      context_window: number
+      compact_limit: number
+      folded_tool_results: number
+      cumulative_input: number
+      cumulative_output: number
+      near_limit: boolean
+    }
+  | {
+      type: 'compaction'
+      summary: string
+      tokens_before: number
+      tokens_after: number
+      dropped_messages: number
+      kept_messages?: AgentMessage[]
+    }
+
+/** Latest context fill for the Composer ring (vs effective compact limit). */
+export type ContextUsageSnapshot = {
+  estimatedTokens: number
+  contextWindow: number
+  /** Auto-compact trigger: min(window×ratio, absolute). */
+  compactLimit: number
+  foldedToolResults: number
+  cumulativeInput: number
+  cumulativeOutput: number
+  nearLimit: boolean
+}
 
 export type WsClientMessage =
   | { type: 'auth'; token: string }
   | { type: 'prompt'; id?: string; sessionId: string; message: string }
   | { type: 'abort'; id?: string; sessionId: string }
+
+export type SlashResultMessage = {
+  type: 'slash_result'
+  sessionId: string
+  kind: 'notice' | 'reset'
+  text: string
+  model?: string
+  revision?: number
+  seed?: Array<{ role: string; content: string }>
+}
 
 export type WsServerMessage =
   | AgentEvent
@@ -250,6 +312,7 @@ export type WsServerMessage =
       title?: string
       model?: string
     }
+  | SlashResultMessage
   | { type: 'error'; message: string }
 
 export type ToolRunState = {
@@ -261,6 +324,8 @@ export type ToolRunState = {
   isError?: boolean
   status: 'running' | 'done' | 'error'
   durationMs?: number
+  /** Consecutive identical done results collapsed into one card. */
+  repeatCount?: number
 }
 
 export type TranscriptItem =
@@ -282,4 +347,5 @@ export type TranscriptState = {
   items: TranscriptItem[]
   busy: boolean
   revision: number
+  contextUsage?: ContextUsageSnapshot
 }

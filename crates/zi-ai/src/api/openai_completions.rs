@@ -298,10 +298,25 @@ fn map_chat_stop(raw: &str) -> StopReason {
 }
 
 fn apply_chat_usage(output: &mut AssistantMessage, usage: &Value, model: &Model) {
-    output.usage.input = usage
+    let prompt = usage
         .get("prompt_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    // DeepSeek (and some gateways): prompt_tokens = hit + miss.
+    let cache_hit = usage
+        .get("prompt_cache_hit_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            usage
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(|v| v.as_u64())
+        })
+        .unwrap_or(0);
+    let cache_miss = usage
+        .get("prompt_cache_miss_tokens")
+        .and_then(|v| v.as_u64());
+    output.usage.cache_read = cache_hit;
+    output.usage.input = cache_miss.unwrap_or_else(|| prompt.saturating_sub(cache_hit));
     output.usage.output = usage
         .get("completion_tokens")
         .and_then(|v| v.as_u64())
@@ -309,7 +324,7 @@ fn apply_chat_usage(output: &mut AssistantMessage, usage: &Value, model: &Model)
     output.usage.total_tokens = usage
         .get("total_tokens")
         .and_then(|v| v.as_u64())
-        .unwrap_or(output.usage.input + output.usage.output);
+        .unwrap_or(prompt + output.usage.output);
     calculate_cost(model, &mut output.usage);
 }
 
@@ -320,4 +335,57 @@ pub fn stream_simple(
     options: SimpleStreamOptions,
 ) -> AssistantMessageEventStream {
     stream(model, context, options.stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AssistantRole, ModelCost, StopReason};
+
+    #[test]
+    fn maps_deepseek_prompt_cache_hit_and_miss() {
+        let model = Model {
+            id: "deepseek-flash".into(),
+            name: "DeepSeek Flash".into(),
+            api: "openai-completions".into(),
+            provider: "deepseek".into(),
+            base_url: String::new(),
+            reasoning: false,
+            context_window: 128_000,
+            max_tokens: 4096,
+            cost: ModelCost {
+                input: 1.0,
+                output: 1.0,
+                cache_read: 0.1,
+                cache_write: 0.0,
+            },
+        };
+        let mut output = AssistantMessage {
+            role: AssistantRole::Assistant,
+            content: vec![],
+            api: "openai-completions".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            response_model: None,
+            response_id: None,
+            usage: Default::default(),
+            stop_reason: StopReason::Stop,
+            error_message: None,
+            raw_stop_reason: None,
+            timestamp: 0,
+            duration_ms: None,
+        };
+        let usage = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_cache_hit_tokens": 700,
+            "prompt_cache_miss_tokens": 300,
+        });
+        apply_chat_usage(&mut output, &usage, &model);
+        assert_eq!(output.usage.cache_read, 700);
+        assert_eq!(output.usage.input, 300);
+        assert_eq!(output.usage.output, 50);
+        assert_eq!(output.usage.total_tokens, 1050);
+    }
 }

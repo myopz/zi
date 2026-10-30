@@ -158,6 +158,10 @@ pub fn find_skill<'a>(skills: &'a [Skill], name: &str) -> Option<&'a Skill> {
 }
 
 /// Format skills for inclusion in the system prompt (Agent Skills XML block).
+/// Max chars of each skill description in the short catalog.
+pub const SKILL_CATALOG_DESC_CHARS: usize = 120;
+
+/// Format a short skill catalog (name + one-line description + path). Bodies load via read.
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     let visible: Vec<&Skill> = skills
         .iter()
@@ -169,45 +173,23 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 
     let mut lines = vec![
         String::new(),
-        String::new(),
-        "The following skills provide specialized instructions for specific tasks.".into(),
-        "Use the read tool to load a skill's file when the task matches its description.".into(),
-        "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md) and use that absolute path in tool commands.".into(),
-        String::new(),
+        "Available skills (short catalog). Use read on <location> when a skill matches.".into(),
         "<available_skills>".into(),
     ];
 
     for skill in visible {
-        lines.push("  <skill>".into());
-        lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
+        let desc: String = skill.description.chars().take(SKILL_CATALOG_DESC_CHARS).collect();
+        let desc = if skill.description.chars().count() > SKILL_CATALOG_DESC_CHARS {
+            format!("{desc}…")
+        } else {
+            desc
+        };
         lines.push(format!(
-            "    <description>{}</description>",
-            escape_xml(&skill.description)
+            "- {} — {} ({})",
+            skill.name,
+            desc.replace('\n', " "),
+            skill.file_path.display()
         ));
-        lines.push(format!(
-            "    <location>{}</location>",
-            escape_xml(&skill.file_path.display().to_string())
-        ));
-        lines.push(format!(
-            "    <base_dir>{}</base_dir>",
-            escape_xml(&skill.base_dir.display().to_string())
-        ));
-        lines.push(format!(
-            "    <source>{}</source>",
-            match skill.source {
-                SkillSource::User => "user",
-                SkillSource::Project => "project",
-                SkillSource::Path => "path",
-                SkillSource::Agents => "agents",
-            }
-        ));
-        if !skill.body.is_empty() {
-            lines.push(format!(
-                "    <body_chars>{}</body_chars>",
-                skill.body.chars().count()
-            ));
-        }
-        lines.push("  </skill>".into());
     }
     lines.push("</available_skills>".into());
     lines.join("\n")
@@ -439,10 +421,3 @@ fn parse_frontmatter(content: &str) -> (SkillFrontmatter, String) {
     (frontmatter, body)
 }
 
-fn escape_xml(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}

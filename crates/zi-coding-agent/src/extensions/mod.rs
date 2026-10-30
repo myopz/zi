@@ -391,6 +391,26 @@ impl ExtensionHost {
         out
     }
 
+    /// Expose deferred tools to codemode / tool_search without putting them in the parent active set.
+    ///
+    /// The LLM schema still advertises deferred tools separately; this keeps nested
+    /// `await tool("explore", …)` from failing with "not registered".
+    pub fn publish_deferred_tools(&self, deferred: &[Arc<dyn AgentTool>]) {
+        if deferred.is_empty() {
+            return;
+        }
+        let Ok(mut guard) = self.tool_list.write() else {
+            return;
+        };
+        let mut seen: std::collections::HashSet<String> =
+            guard.iter().map(|t| t.name().to_string()).collect();
+        for tool in deferred {
+            if seen.insert(tool.name().to_string()) {
+                guard.push(Arc::clone(tool));
+            }
+        }
+    }
+
     pub fn registry(&self) -> &ExtensionRegistry {
         &self.registry
     }

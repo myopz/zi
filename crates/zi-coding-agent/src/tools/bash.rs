@@ -10,7 +10,11 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::Command;
 
-const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+use super::bash_guard::exploration_bash_reason;
+use super::spill::{spill_if_large, DEFAULT_SPILL_THRESHOLD};
+
+/// Cap bytes collected from the child process.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// Execute shell commands with cwd set to the workspace.
 pub struct BashTool {
@@ -44,7 +48,10 @@ impl AgentTool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command in the workspace (stdout and stderr combined)."
+        "Run a shell command for build/test/git/install only (cwd = workspace). \
+         Exploration commands (ls/cat/find/rg/grep/sed/wc/head of source trees) are \
+         rejected — use read/grep/find/ls for point lookups or explore for broad search. \
+         Large allowed output spills to a file with a short pointer."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -68,6 +75,13 @@ impl AgentTool for BashTool {
             Some(c) => c,
             None => return AgentToolResult::error("missing required parameter: command"),
         };
+        if let Some(kind) = exploration_bash_reason(command) {
+            return AgentToolResult::error(format!(
+                "bash rejected ({kind}): this looks like codebase exploration. \
+                 Use the explore tool for multi-file / architecture questions, or read \
+                 for a single file. Reserve bash for git/npm/cargo/tests/install."
+            ));
+        }
         let timeout_secs = args.get("timeout").and_then(|v| v.as_f64());
 
         if !self.cwd.is_dir() {
@@ -109,8 +123,8 @@ impl AgentTool for BashTool {
                     Ok(0) => break combined,
                     Ok(n) => {
                         combined.extend_from_slice(&buf[..n]);
-                        if combined.len() > MAX_OUTPUT_BYTES {
-                            combined.truncate(MAX_OUTPUT_BYTES);
+                        if combined.len() > MAX_CAPTURE_BYTES {
+                            combined.truncate(MAX_CAPTURE_BYTES);
                             break combined;
                         }
                     }
@@ -127,8 +141,8 @@ impl AgentTool for BashTool {
                         Ok(0) => break combined,
                         Ok(n) => {
                             combined.extend_from_slice(&buf[..n]);
-                            if combined.len() > MAX_OUTPUT_BYTES {
-                                combined.truncate(MAX_OUTPUT_BYTES);
+                            if combined.len() > MAX_CAPTURE_BYTES {
+                                combined.truncate(MAX_CAPTURE_BYTES);
                                 break combined;
                             }
                         }
@@ -183,11 +197,7 @@ impl AgentTool for BashTool {
         let exit_code = status.code().unwrap_or(1);
         let wall = started.elapsed().as_secs_f64();
 
-        let mut text = output;
-        if text.len() > MAX_OUTPUT_BYTES {
-            text.truncate(MAX_OUTPUT_BYTES);
-            text.push_str("\n… (output truncated)");
-        }
+        let mut text = spill_if_large(&output, DEFAULT_SPILL_THRESHOLD);
         text.push_str(&format!("\n\nexit_code: {exit_code}\nwall_time_seconds: {wall:.3}"));
 
         if exit_code == 0 {

@@ -2,6 +2,7 @@ import {
   FolderOpen,
   LogOut,
   MessageSquarePlus,
+  PanelLeftClose,
   Pencil,
   Plus,
   Settings,
@@ -19,10 +20,15 @@ import { formatApiError } from '@/lib/api'
 import type { Session, User, Workspace } from '@/lib/types'
 import {
   cn,
+  formatSessionWhen,
+  sessionDisplayTitle,
   shortenPath,
   suggestNewWorkspaceCwd,
   workspaceLabel,
 } from '@/lib/utils'
+
+const selectedItemClass =
+  'bg-primary/15 text-foreground ring-1 ring-inset ring-primary/35 shadow-[inset_3px_0_0_0] shadow-primary'
 
 type RenameTarget =
   | { kind: 'workspace'; id: string }
@@ -36,6 +42,8 @@ export function Sidebar({
   sessions,
   sessionId,
   suggestedWorkspaceCwd,
+  mobile,
+  onCollapse,
   onSelectWorkspace,
   onSelectSession,
   onDeleteSession,
@@ -53,6 +61,9 @@ export function Sidebar({
   sessions: Session[]
   sessionId: string | null
   suggestedWorkspaceCwd: string
+  /** Drawer mode: fixed overlay on small screens. */
+  mobile?: boolean
+  onCollapse?: () => void
   onSelectWorkspace: (id: string) => void
   onSelectSession: (id: string) => void
   onDeleteSession: (id: string) => void
@@ -173,7 +184,14 @@ export function Sidebar({
   }
 
   return (
-    <aside className="relative z-20 flex h-full min-h-0 w-64 shrink-0 flex-col border-r border-border bg-sidebar">
+    <aside
+      className={cn(
+        'flex h-full min-h-0 w-64 shrink-0 flex-col border-r border-border bg-sidebar',
+        mobile
+          ? 'fixed inset-y-0 left-0 z-40 max-w-[85vw] shadow-xl'
+          : 'relative z-20',
+      )}
+    >
       <div className="flex shrink-0 items-center gap-2 px-3 py-3">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/15 font-mono text-sm font-semibold text-primary">
           zi
@@ -186,6 +204,23 @@ export function Sidebar({
             </div>
           </HoverTip>
         </div>
+        {onCollapse ? (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0"
+            onClick={onCollapse}
+            title={mobile ? 'Close sidebar' : 'Collapse sidebar'}
+            aria-label={mobile ? 'Close sidebar' : 'Collapse sidebar'}
+          >
+            {mobile ? (
+              <X className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        ) : null}
       </div>
       <Separator className="shrink-0" />
       <div className="relative z-30 shrink-0 overflow-visible px-3 py-2">
@@ -284,8 +319,8 @@ export function Sidebar({
                 <div
                   key={ws.id}
                   className={cn(
-                    'group flex w-full items-start gap-0.5 rounded-md hover:bg-accent',
-                    workspaceId === ws.id && 'bg-accent',
+                    'group flex w-full items-start gap-0.5 rounded-md hover:bg-accent/70',
+                    workspaceId === ws.id && selectedItemClass,
                   )}
                 >
                   {isRenaming ? (
@@ -332,16 +367,33 @@ export function Sidebar({
                       >
                         <button
                           type="button"
-                          onClick={() => onSelectWorkspace(ws.id)}
+                          onClick={() => {
+                            onSelectWorkspace(ws.id)
+                            if (mobile) {
+                              onCollapse?.()
+                            }
+                          }}
                           onDoubleClick={(e) => {
                             e.preventDefault()
                             beginRenameWorkspace(ws)
                           }}
                           className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs"
                         >
-                          <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <FolderOpen
+                            className={cn(
+                              'mt-0.5 h-3.5 w-3.5 shrink-0',
+                              workspaceId === ws.id
+                                ? 'text-primary'
+                                : 'text-muted-foreground',
+                            )}
+                          />
                           <span className="min-w-0 flex-1 overflow-hidden">
-                            <span className="block truncate font-medium">
+                            <span
+                              className={cn(
+                                'block truncate font-medium',
+                                workspaceId === ws.id && 'text-primary',
+                              )}
+                            >
                               {label}
                             </span>
                             <span className="block truncate font-mono text-[10px] text-muted-foreground">
@@ -407,15 +459,16 @@ export function Sidebar({
       <ScrollArea className="min-h-0 flex-1 px-2">
         <div className="space-y-1 pb-3">
           {sessions.map((session) => {
-            const title = session.title || 'Untitled'
+            const title = sessionDisplayTitle(session)
+            const selected = sessionId === session.id
             const isRenaming =
               renaming?.kind === 'session' && renaming.id === session.id
             return (
               <div
                 key={session.id}
                 className={cn(
-                  'group flex w-full items-start gap-1 rounded-md hover:bg-accent',
-                  sessionId === session.id && 'bg-accent',
+                  'group flex w-full items-start gap-1 rounded-md hover:bg-accent/70',
+                  selected && selectedItemClass,
                 )}
               >
                 {isRenaming ? (
@@ -449,17 +502,39 @@ export function Sidebar({
                   </div>
                 ) : (
                   <>
-                    <HoverTip content={title} className="min-w-0 flex-1">
+                    <HoverTip
+                      content={
+                        <span className="flex flex-col gap-0.5">
+                          <span>{session.title || title}</span>
+                          <span className="text-muted-foreground">
+                            {formatSessionWhen(session.updatedAt)}
+                          </span>
+                        </span>
+                      }
+                      className="min-w-0 flex-1"
+                    >
                       <button
                         type="button"
-                        onClick={() => onSelectSession(session.id)}
+                        onClick={() => {
+                          onSelectSession(session.id)
+                          if (mobile) {
+                            onCollapse?.()
+                          }
+                        }}
                         onDoubleClick={(e) => {
                           e.preventDefault()
                           beginRenameSession(session)
                         }}
                         className="flex w-full min-w-0 flex-col gap-1 px-2 py-2 text-left"
                       >
-                        <span className="block truncate text-sm">{title}</span>
+                        <span
+                          className={cn(
+                            'block truncate text-sm',
+                            selected && 'font-medium text-primary',
+                          )}
+                        >
+                          {title}
+                        </span>
                         <span className="mt-1 flex items-center gap-2">
                           <Badge
                             variant="outline"
@@ -468,7 +543,7 @@ export function Sidebar({
                             {session.model || 'model'}
                           </Badge>
                           <span className="text-[10px] text-muted-foreground">
-                            r{session.revision}
+                            {formatSessionWhen(session.updatedAt)}
                           </span>
                         </span>
                       </button>

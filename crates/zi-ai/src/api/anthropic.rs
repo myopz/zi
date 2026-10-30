@@ -11,7 +11,10 @@ use crate::cost::calculate_cost;
 use crate::event_stream::AssistantMessageEventStream;
 use crate::sse::{decode_sse, parse_json_data};
 use crate::streaming_json::ToolCallArgumentsStream;
-use crate::transcript::{anthropic_messages, anthropic_tools, declared_tools, leading_system_text};
+use crate::transcript::{
+    anthropic_attach_message_cache, anthropic_messages, anthropic_tools_with_cache, declared_tools,
+    leading_system_text,
+};
 use crate::types::{
     AssistantContentBlock, AssistantMessage, DoneStopReason, ErrorStopReason, Model, SimpleStreamOptions,
     StopReason, StreamOptions, Tool, TranscriptContext,
@@ -65,18 +68,26 @@ async fn run_anthropic(
         .unwrap_or(model.max_tokens)
         .min(model.max_tokens);
 
+    let mut messages = anthropic_messages(&context.messages);
+    anthropic_attach_message_cache(&mut messages);
+
     let mut body = json!({
         "model": model.id,
         "max_tokens": max_tokens,
-        "messages": anthropic_messages(&context.messages),
+        "messages": messages,
         "stream": true,
     });
 
     if let Some(system) = leading_system_text(&context.messages) {
-        body["system"] = json!(system);
+        // Prompt-cache the stable system prefix (Anthropic ephemeral cache).
+        body["system"] = json!([{
+            "type": "text",
+            "text": system,
+            "cache_control": { "type": "ephemeral" },
+        }]);
     }
     if !tools.is_empty() {
-        body["tools"] = json!(anthropic_tools(&tools));
+        body["tools"] = json!(anthropic_tools_with_cache(&tools, true));
     }
     if let Some(temp) = options.temperature {
         body["temperature"] = json!(temp);

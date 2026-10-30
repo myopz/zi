@@ -8,8 +8,8 @@ use tokio::process::Command;
 
 use super::path::resolve_to_cwd;
 
-const DEFAULT_LIMIT: usize = 1000;
-const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const DEFAULT_LIMIT: usize = 200;
+const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 static PARAMETERS: &str = r#"{
   "type": "object",
@@ -25,7 +25,7 @@ static PARAMETERS: &str = r#"{
 pub fn find_tool(cwd: PathBuf) -> Arc<FnAgentTool> {
     FnAgentTool::new(
         "find",
-        "Find files by glob pattern. Prefers fd when available; falls back to POSIX find.",
+        "Search files: locate paths by glob (cheap; prefer over bash find). Default limit 200. Narrow with path. For wide unknown exploration use explore.",
         serde_json::from_str(PARAMETERS).expect("find parameters schema"),
         move |_id, args, _on_update| {
             let cwd = cwd.clone();

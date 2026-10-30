@@ -290,16 +290,56 @@ fn user_content_to_openai(content: &UserContent) -> Value {
 }
 
 pub fn anthropic_tools(tools: &[Tool]) -> Vec<Value> {
+    anthropic_tools_with_cache(tools, false)
+}
+
+/// Anthropic tool definitions; when `cache_last` is set, the final tool gets `cache_control`.
+pub fn anthropic_tools_with_cache(tools: &[Tool], cache_last: bool) -> Vec<Value> {
+    let last = tools.len().saturating_sub(1);
     tools
         .iter()
-        .map(|tool| {
-            json!({
+        .enumerate()
+        .map(|(index, tool)| {
+            let mut value = json!({
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters,
-            })
+            });
+            if cache_last && index == last {
+                value["cache_control"] = json!({ "type": "ephemeral" });
+            }
+            value
         })
         .collect()
+}
+
+/// Attach Anthropic ephemeral `cache_control` to the last content block of the last
+/// user-role message (user or tool_result aggregated as user).
+pub fn anthropic_attach_message_cache(messages: &mut [Value]) {
+    let Some(last) = messages.last_mut() else {
+        return;
+    };
+    let role = last.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    if role != "user" && role != "system" {
+        return;
+    }
+    match last.get_mut("content") {
+        Some(Value::Array(blocks)) => {
+            if let Some(block) = blocks.last_mut() {
+                if block.is_object() {
+                    block["cache_control"] = json!({ "type": "ephemeral" });
+                }
+            }
+        }
+        Some(Value::String(text)) => {
+            *last.get_mut("content").unwrap() = json!([{
+                "type": "text",
+                "text": text.clone(),
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        }
+        _ => {}
+    }
 }
 
 pub fn openai_tools(tools: &[Tool]) -> Vec<Value> {
@@ -516,7 +556,43 @@ fn wall_now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{SystemMessage, SystemRole};
+    use crate::types::{SystemMessage, SystemRole, Tool};
+
+    #[test]
+    fn anthropic_tools_cache_last_only() {
+        let tools = vec![
+            Tool {
+                name: "a".into(),
+                description: "A".into(),
+                parameters: json!({ "type": "object" }),
+            },
+            Tool {
+                name: "b".into(),
+                description: "B".into(),
+                parameters: json!({ "type": "object" }),
+            },
+        ];
+        let cached = anthropic_tools_with_cache(&tools, true);
+        assert!(cached[0].get("cache_control").is_none());
+        assert_eq!(
+            cached[1].get("cache_control"),
+            Some(&json!({ "type": "ephemeral" }))
+        );
+    }
+
+    #[test]
+    fn anthropic_message_cache_attaches_to_last_user() {
+        let mut messages = vec![
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "hi" }] }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": "go" }] }),
+        ];
+        anthropic_attach_message_cache(&mut messages);
+        assert_eq!(
+            messages[1]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+        assert!(messages[0]["content"][0].get("cache_control").is_none());
+    }
 
     fn bash_tool() -> Tool {
         Tool {

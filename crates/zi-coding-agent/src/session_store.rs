@@ -163,21 +163,56 @@ impl SessionStore {
     }
 
     /// Open an existing session file and restore message entries as [`Message`]s.
+    ///
+    /// Compaction entries reset the projected transcript: earlier messages are dropped and the
+    /// compaction summary is injected as a user message before messages that follow.
     pub fn open_existing(cwd: &Path, path: &Path) -> Result<(Self, Vec<Message>)> {
         let entries = load_entries_from_path(path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut header = None;
         let mut last_entry_id = None;
         let mut name = None;
         let mut messages = Vec::new();
+        // Parallel list of message entry ids so compaction can find `first_kept_entry_id`.
+        let mut message_entry_ids: Vec<String> = Vec::new();
+        let mut leading_system: Vec<Message> = Vec::new();
+
         for entry in entries {
             match entry {
                 FileEntry::Header(h) => header = Some(h),
                 FileEntry::Entry(SessionEntry::Message { id, message, .. }) => {
-                    last_entry_id = Some(id);
+                    last_entry_id = Some(id.clone());
                     match serde_json::from_value::<Message>(message) {
-                        Ok(m) => messages.push(m),
+                        Ok(m) => {
+                            if matches!(m, Message::System(_)) && message_entry_ids.is_empty() {
+                                leading_system.push(m.clone());
+                            }
+                            messages.push(m);
+                            message_entry_ids.push(id);
+                        }
                         Err(err) => tracing::warn!("skip session message: {err}"),
                     }
+                }
+                FileEntry::Entry(SessionEntry::Compaction {
+                    id,
+                    summary,
+                    ..
+                }) => {
+                    last_entry_id = Some(id);
+                    // Reset projection: keep leading system prompts, inject summary, then
+                    // subsequent Message entries after this compaction rebuild the tail.
+                    let mut projected = leading_system.clone();
+                    projected.push(Message::User(zi_ai::UserMessage {
+                        role: zi_ai::UserRole::User,
+                        content: zi_ai::UserContent::Text(format!(
+                            "<compaction>\n{summary}\n</compaction>"
+                        )),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                    }));
+                    messages = projected;
+                    message_entry_ids.clear();
                 }
                 FileEntry::Entry(SessionEntry::SessionInfo {
                     id,
@@ -257,19 +292,24 @@ impl SessionStore {
     }
 
     /// Append a compaction summary entry and return its id.
-    pub fn append_compaction(&mut self, summary: impl Into<String>) -> Result<String> {
-        let first_kept = self
-            .last_entry_id
-            .clone()
-            .unwrap_or_else(|| "root".into());
+    ///
+    /// `first_kept_entry_id` should be the first message entry id still present in the
+    /// projected transcript (typically the current `last_entry_id` before the compaction
+    /// line is written, i.e. the last kept message).
+    pub fn append_compaction(
+        &mut self,
+        summary: impl Into<String>,
+        first_kept_entry_id: impl Into<String>,
+        tokens_before: u64,
+    ) -> Result<String> {
         let entry_id = Uuid::now_v7().to_string();
         let entry = SessionEntry::Compaction {
             id: entry_id.clone(),
             parent_id: self.last_entry_id.clone(),
             timestamp: iso8601_now(),
             summary: summary.into(),
-            first_kept_entry_id: first_kept,
-            tokens_before: 0,
+            first_kept_entry_id: first_kept_entry_id.into(),
+            tokens_before,
             details: None,
             usage: None,
             from_hook: None,
@@ -277,6 +317,11 @@ impl SessionStore {
         };
         self.append_entry(entry)?;
         Ok(entry_id)
+    }
+
+    /// Last appended entry id (message or otherwise), when known.
+    pub fn last_entry_id(&self) -> Option<&str> {
+        self.last_entry_id.as_deref()
     }
 
     /// Append a branch summary (used by `/fork` bookkeeping).

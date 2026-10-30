@@ -74,7 +74,13 @@ export async function hydrateTranscript(
   try {
     const detail = await getSession(sessionId)
     const remoteRevision = detail.revision
-    if (cached && cached.revision >= remoteRevision) {
+    // Prefer cache only when it is at least as complete as the server. A prior
+    // agent_end bug could store a high revision with only the last turn.
+    if (
+      cached &&
+      cached.revision >= remoteRevision &&
+      cached.messages.length >= detail.messages.length
+    ) {
       await db.sessions.put(detail.session)
       return {
         messages: cached.messages,
@@ -85,13 +91,13 @@ export async function hydrateTranscript(
     await db.sessions.put(detail.session)
     await db.transcripts.put({
       sessionId,
-      revision: remoteRevision,
+      revision: Math.max(remoteRevision, cached?.revision ?? 0),
       messages: detail.messages,
       updatedAt: new Date().toISOString(),
     })
     return {
       messages: detail.messages,
-      revision: remoteRevision,
+      revision: Math.max(remoteRevision, cached?.revision ?? 0),
       fromCache: false,
     }
   } catch {
@@ -276,7 +282,6 @@ export async function ensureSession(
   }
   const created = await createSession({
     workspaceId,
-    title: 'New session',
     model,
   })
   await putSessionCache(userId, created)

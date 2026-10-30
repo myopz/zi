@@ -1,8 +1,10 @@
+import { PanelLeft, PanelRight } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Composer } from '@/components/chat/Composer'
 import { Transcript } from '@/components/chat/Transcript'
 import { RightPanel } from '@/components/layout/RightPanel'
 import { Sidebar } from '@/components/layout/Sidebar'
+import { Button } from '@/components/ui/button'
 import {
   createSession,
   createWorkspace,
@@ -38,6 +40,7 @@ import {
 } from '@/lib/idb/sync'
 import {
   appendOptimisticUser,
+  applySlashResult,
   createTranscriptState,
   reduceAgentEvent,
   transcriptToMessages,
@@ -50,7 +53,12 @@ import type {
   TranscriptState,
   Workspace,
 } from '@/lib/types'
+import { formatTokens, sumTranscriptUsage } from '@/lib/usage'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { AgentSocket } from '@/lib/ws'
+
+const LEFT_OPEN_PREF = 'layout.leftOpen'
+const RIGHT_OPEN_PREF = 'layout.rightOpen'
 
 export function AppShell({
   auth,
@@ -74,6 +82,12 @@ export function AppShell({
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [bootError, setBootError] = useState<string | null>(null)
   const [suggestedWorkspaceCwd, setSuggestedWorkspaceCwd] = useState('')
+  const isDesktop = useMediaQuery('(min-width: 768px)')
+  // Desktop: in-flow panels, remembered. Mobile: overlay drawers, start closed.
+  const [leftOpen, setLeftOpen] = useState(true)
+  const [rightOpen, setRightOpen] = useState(true)
+  const [mobileLeftOpen, setMobileLeftOpen] = useState(false)
+  const [mobileRightOpen, setMobileRightOpen] = useState(false)
   const socketRef = useRef<AgentSocket | null>(null)
   const transcriptRef = useRef(transcript)
   transcriptRef.current = transcript
@@ -82,10 +96,16 @@ export function AppShell({
   const userIdRef = useRef(auth.user.id)
   userIdRef.current = auth.user.id
   const transcriptLoadGen = useRef(0)
+  const layoutPrefsReady = useRef(false)
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === sessionId) ?? null,
     [sessions, sessionId],
+  )
+
+  const sessionTokenTotals = useMemo(
+    () => sumTranscriptUsage(transcript.items),
+    [transcript.items],
   )
 
   const persistTranscript = useCallback((next: TranscriptState) => {
@@ -104,10 +124,63 @@ export function AppShell({
   useEffect(() => {
     let cancelled = false
     void (async () => {
+      const [storedLeft, storedRight] = await Promise.all([
+        getPref<boolean>(auth.user.id, LEFT_OPEN_PREF, true),
+        getPref<boolean>(auth.user.id, RIGHT_OPEN_PREF, true),
+      ])
+      if (cancelled) {
+        return
+      }
+      setLeftOpen(storedLeft)
+      setRightOpen(storedRight)
+      layoutPrefsReady.current = true
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [auth.user.id])
+
+  useEffect(() => {
+    if (!layoutPrefsReady.current) {
+      return
+    }
+    void setPref(auth.user.id, LEFT_OPEN_PREF, leftOpen)
+  }, [auth.user.id, leftOpen])
+
+  useEffect(() => {
+    if (!layoutPrefsReady.current) {
+      return
+    }
+    void setPref(auth.user.id, RIGHT_OPEN_PREF, rightOpen)
+  }, [auth.user.id, rightOpen])
+
+  useEffect(() => {
+    if (isDesktop) {
+      setMobileLeftOpen(false)
+      setMobileRightOpen(false)
+    }
+  }, [isDesktop])
+
+  useEffect(() => {
+    if (!mobileLeftOpen && !mobileRightOpen) {
+      return
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileLeftOpen(false)
+        setMobileRightOpen(false)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [mobileLeftOpen, mobileRightOpen])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
       try {
-        const [prefsWorkspace, prefsSession, modelRes] = await Promise.all([
+        const [prefsWorkspace, modelRes] = await Promise.all([
           getPref<string | null>(auth.user.id, 'workspaceId', null),
-          getPref<string | null>(auth.user.id, 'sessionId', null),
           listModels().catch(() => ({
             models: [] as ModelInfo[],
             current: undefined,
@@ -133,42 +206,22 @@ export function AppShell({
           )
         }
         const nextWorkspaces = await hydrateWorkspaces(auth.user.id)
+        if (cancelled) {
+          return
+        }
         setWorkspaces(nextWorkspaces)
         setModels(modelRes.models)
-        const initialWorkspace =
-          nextWorkspaces.find((w) => w.id === defaultWs?.id)?.id ??
-          nextWorkspaces.find((w) => w.name === 'Default')?.id ??
-          nextWorkspaces.find((w) => w.id === prefsWorkspace)?.id ??
-          nextWorkspaces[0]?.id ??
-          null
-        setWorkspaceId(initialWorkspace)
         if (modelRes.current) {
           setModelId(modelRes.current)
         }
-        if (initialWorkspace) {
-          const ensured = await ensureSession(
-            auth.user.id,
-            initialWorkspace,
-            modelRes.current,
-          )
-          if (cancelled) {
-            return
-          }
-          const sess = await hydrateSessions(auth.user.id, initialWorkspace)
-          const list = sess.some((s) => s.id === ensured.id)
-            ? sess
-            : [ensured, ...sess]
-          setSessions(list)
-          const initialSession =
-            list.find((s) => s.id === prefsSession)?.id ??
-            ensured.id ??
-            list[0]?.id ??
-            null
-          setSessionId(initialSession)
-          if (!modelRes.current && list[0]?.model) {
-            setModelId(list[0].model)
-          }
-        }
+        // Session list/selection is owned by the workspaceId effect below.
+        const initialWorkspace =
+          nextWorkspaces.find((w) => w.id === prefsWorkspace)?.id ??
+          nextWorkspaces.find((w) => w.id === defaultWs?.id)?.id ??
+          nextWorkspaces.find((w) => w.name === 'Default')?.id ??
+          nextWorkspaces[0]?.id ??
+          null
+        setWorkspaceId(initialWorkspace)
       } catch (err) {
         if (!cancelled) {
           setBootError(formatApiError(err))
@@ -184,33 +237,76 @@ export function AppShell({
     if (!workspaceId) {
       setSessions([])
       setSessionId(null)
+      setTranscript(createTranscriptState())
+      setDraft('')
+      setStatus(null)
       return
     }
     void setPref(auth.user.id, 'workspaceId', workspaceId)
     let cancelled = false
     void (async () => {
-      const sess = await hydrateSessions(auth.user.id, workspaceId)
+      // Drop the previous workspace's selection immediately so the center pane
+      // cannot keep showing another workspace's session while we hydrate.
+      setSessionId(null)
+      setTranscript(createTranscriptState())
+      setDraft('')
+      setStatus(null)
+
+      let sess = await hydrateSessions(auth.user.id, workspaceId)
       if (cancelled) {
         return
       }
+      if (sess.length === 0) {
+        const created = await ensureSession(
+          auth.user.id,
+          workspaceId,
+          model || undefined,
+        )
+        if (cancelled) {
+          return
+        }
+        sess = [created]
+      }
+      const [rememberedForWorkspace, rememberedGlobal] = await Promise.all([
+        getPref<string | null>(
+          auth.user.id,
+          `sessionId:${workspaceId}`,
+          null,
+        ),
+        getPref<string | null>(auth.user.id, 'sessionId', null),
+      ])
+      if (cancelled) {
+        return
+      }
+      const remembered = rememberedForWorkspace ?? rememberedGlobal
+      const nextId =
+        sess.find((s) => s.id === remembered)?.id ?? sess[0]?.id ?? null
       setSessions(sess)
-      setSessionId((prev) =>
-        sess.some((s) => s.id === prev) ? prev : (sess[0]?.id ?? null),
-      )
+      setSessionId(nextId)
     })()
     return () => {
       cancelled = true
     }
+    // `model` only seeds a brand-new empty workspace session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.user.id, workspaceId])
 
   useEffect(() => {
     if (!sessionId) {
       setTranscript(createTranscriptState())
       setDraft('')
+      setStatus(null)
       return
     }
     void setPref(auth.user.id, 'sessionId', sessionId)
+    if (workspaceId) {
+      void setPref(auth.user.id, `sessionId:${workspaceId}`, sessionId)
+    }
     const loadGen = ++transcriptLoadGen.current
+    // Clear previous session's transcript immediately on switch; hydrate fills in.
+    setTranscript(createTranscriptState())
+    setDraft('')
+    setStatus(null)
     let cancelled = false
     void (async () => {
       const [loaded, draftText, sessionStatus] = await Promise.all([
@@ -221,8 +317,9 @@ export function AppShell({
       if (cancelled || loadGen !== transcriptLoadGen.current) {
         return
       }
-      // Never clobber a live or newer local transcript (first greeting replies
-      // often finish before IndexedDB hydrate returns a stale empty/partial cache).
+      // Never clobber a *live* turn for this same session (prompt can finish
+      // before IndexedDB/network hydrate returns a stale empty/partial cache).
+      // Completed assistant/tool items from another session must not block switch.
       setTranscript((prev) => {
         if (loadGen !== transcriptLoadGen.current) {
           return prev
@@ -230,10 +327,7 @@ export function AppShell({
         if (
           prev.busy ||
           prev.items.some(
-            (item) =>
-              (item.kind === 'assistant' && item.streaming) ||
-              item.kind === 'assistant' ||
-              item.kind === 'tool',
+            (item) => item.kind === 'assistant' && item.streaming,
           )
         ) {
           return prev
@@ -259,7 +353,8 @@ export function AppShell({
     return () => {
       cancelled = true
     }
-    // sessions intentionally omitted: avoid reload loops when list refreshes
+    // sessions/workspaceId omitted: sessionId changes drive reload; workspace
+    // effect clears selection before assigning the next workspace's session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.user.id, sessionId])
 
@@ -283,11 +378,17 @@ export function AppShell({
         }
       },
       onSessionMeta: (meta) => {
-        setTranscript((prev) => {
-          const next = { ...prev, revision: meta.revision }
-          persistTranscript(next)
-          return next
-        })
+        const active = meta.sessionId === sessionIdRef.current
+        if (active) {
+          setTranscript((prev) => {
+            const next = { ...prev, revision: meta.revision }
+            persistTranscript(next)
+            return next
+          })
+          if (meta.model) {
+            setModelId(meta.model)
+          }
+        }
         setSessions((prev) =>
           prev.map((s) =>
             s.id === meta.sessionId
@@ -301,8 +402,32 @@ export function AppShell({
               : s,
           ),
         )
-        if (meta.model) {
-          setModelId(meta.model)
+      },
+      onSlashResult: (msg) => {
+        if (msg.sessionId !== sessionIdRef.current) {
+          return
+        }
+        setTranscript((prev) => {
+          const next = applySlashResult(prev, msg)
+          persistTranscript(next)
+          return next
+        })
+        if (msg.model) {
+          setModelId(msg.model)
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === msg.sessionId ? { ...s, model: msg.model! } : s,
+            ),
+          )
+        }
+        if (msg.kind === 'reset' && typeof msg.revision === 'number') {
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === msg.sessionId
+                ? { ...s, revision: msg.revision! }
+                : s,
+            ),
+          )
         }
       },
       onResponse: (msg) => {
@@ -348,7 +473,6 @@ export function AppShell({
       }
       const created = await createSession({
         workspaceId: wsId,
-        title: 'New session',
         model: model || undefined,
       })
       await putSessionCache(auth.user.id, created)
@@ -382,21 +506,8 @@ export function AppShell({
     }
     await putWorkspaceCache(auth.user.id, created)
     setWorkspaces((prev) => [created, ...prev.filter((w) => w.id !== created.id)])
+    // Workspace effect hydrates sessions and selects/creates one.
     setWorkspaceId(created.id)
-    const list = await hydrateSessions(auth.user.id, created.id)
-    if (list.length === 0) {
-      const session = await ensureSession(
-        auth.user.id,
-        created.id,
-        model || undefined,
-      )
-      setSessions([session])
-      setSessionId(session.id)
-      setTranscript(createTranscriptState([], 0))
-    } else {
-      setSessions(list)
-      setSessionId(list[0]?.id ?? null)
-    }
   }
 
   async function handleRenameWorkspace(id: string, name: string) {
@@ -513,53 +624,153 @@ export function AppShell({
     }
   }
 
+  function openSettings() {
+    setSettingsOpen(true)
+    if (isDesktop) {
+      setRightOpen(true)
+    } else {
+      setMobileLeftOpen(false)
+      setMobileRightOpen(true)
+    }
+  }
+
+  function toggleLeft() {
+    if (isDesktop) {
+      setLeftOpen((v) => !v)
+    } else {
+      setMobileRightOpen(false)
+      setMobileLeftOpen((v) => !v)
+    }
+  }
+
+  function toggleRight() {
+    if (isDesktop) {
+      setRightOpen((v) => !v)
+    } else {
+      setMobileLeftOpen(false)
+      setMobileRightOpen((v) => !v)
+    }
+  }
+
+  const showLeft = isDesktop ? leftOpen : mobileLeftOpen
+  const showRight = isDesktop ? rightOpen : mobileRightOpen
+  const mobileDrawerOpen = !isDesktop && (mobileLeftOpen || mobileRightOpen)
+
   return (
-    <div className="flex h-full min-h-0">
-      <Sidebar
-        user={auth.user}
-        workspaces={workspaces}
-        workspaceId={workspaceId}
-        sessions={sessions}
-        sessionId={sessionId}
-        suggestedWorkspaceCwd={suggestedWorkspaceCwd}
-        onSelectWorkspace={setWorkspaceId}
-        onSelectSession={setSessionId}
-        onDeleteSession={(id) => {
-          void handleDeleteSession(id)
-        }}
-        onDeleteWorkspace={(id) => {
-          void handleDeleteWorkspace(id)
-        }}
-        onRenameWorkspace={handleRenameWorkspace}
-        onRenameSession={handleRenameSession}
-        onNewSession={() => {
-          void handleNewSession()
-        }}
-        onAddWorkspace={handleAddWorkspace}
-        onOpenSettings={() => setSettingsOpen(true)}
-        onLogout={() => {
-          void handleLogout()
-        }}
-      />
+    <div className="relative flex h-full min-h-0 overflow-hidden">
+      {mobileDrawerOpen ? (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-black/40"
+          aria-label="Close panel"
+          onClick={() => {
+            setMobileLeftOpen(false)
+            setMobileRightOpen(false)
+          }}
+        />
+      ) : null}
+
+      {showLeft ? (
+        <Sidebar
+          user={auth.user}
+          workspaces={workspaces}
+          workspaceId={workspaceId}
+          sessions={sessions}
+          sessionId={sessionId}
+          suggestedWorkspaceCwd={suggestedWorkspaceCwd}
+          mobile={!isDesktop}
+          onCollapse={() => {
+            if (isDesktop) {
+              setLeftOpen(false)
+            } else {
+              setMobileLeftOpen(false)
+            }
+          }}
+          onSelectWorkspace={(id) => {
+            if (id === workspaceId) {
+              return
+            }
+            // Clear before workspaceId updates so the center pane cannot keep
+            // rendering the previous workspace's session for a frame.
+            setSessionId(null)
+            setSessions([])
+            setTranscript(createTranscriptState())
+            setDraft('')
+            setStatus(null)
+            setWorkspaceId(id)
+          }}
+          onSelectSession={setSessionId}
+          onDeleteSession={(id) => {
+            void handleDeleteSession(id)
+          }}
+          onDeleteWorkspace={(id) => {
+            void handleDeleteWorkspace(id)
+          }}
+          onRenameWorkspace={handleRenameWorkspace}
+          onRenameSession={handleRenameSession}
+          onNewSession={() => {
+            void handleNewSession()
+          }}
+          onAddWorkspace={handleAddWorkspace}
+          onOpenSettings={openSettings}
+          onLogout={() => {
+            void handleLogout()
+          }}
+        />
+      ) : null}
+
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-          <div className="min-w-0 truncate text-sm font-medium">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-2 sm:gap-3 sm:px-4">
+          {!showLeft || !isDesktop ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0"
+              onClick={toggleLeft}
+              title="Open sidebar"
+              aria-label="Open sidebar"
+              aria-pressed={showLeft}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Button>
+          ) : null}
+          <div className="min-w-0 flex-1 truncate text-sm font-medium">
             {activeSession?.title ?? 'No session'}
           </div>
           {bootError ? (
             <button
               type="button"
-              className="ml-auto min-w-0 max-w-[50%] shrink truncate text-xs text-destructive hover:underline"
+              className="min-w-0 max-w-[40%] shrink truncate text-xs text-destructive hover:underline sm:max-w-[50%]"
               onClick={() => setBootError(null)}
               title={bootError}
             >
               {bootError}
             </button>
           ) : (
-            <div className="ml-auto text-xs text-muted-foreground">
-              {transcript.items.length} items · cached via IndexedDB
+            <div className="hidden shrink-0 text-xs text-muted-foreground sm:block">
+              {transcript.items.length} items
+              {sessionTokenTotals.turns > 0
+                ? ` · Σ in ${formatTokens(sessionTokenTotals.input)}`
+                : ''}
+              {' · '}
+              IndexedDB
             </div>
           )}
+          {!showRight || !isDesktop ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0"
+              onClick={toggleRight}
+              title="Open context panel"
+              aria-label="Open context panel"
+              aria-pressed={showRight}
+            >
+              <PanelRight className="h-4 w-4" />
+            </Button>
+          ) : null}
         </header>
         <div className="min-h-0 flex-1">
           <Transcript items={transcript.items} />
@@ -575,17 +786,35 @@ export function AppShell({
           busy={transcript.busy || Boolean(status?.busy)}
           connected={connected}
           disabled={!sessionId}
+          workspaceId={workspaceId}
+          contextUsage={transcript.contextUsage}
+          sessionTokens={{
+            input: sessionTokenTotals.input,
+            output: sessionTokenTotals.output,
+            turns: sessionTokenTotals.turns,
+          }}
           onSubmit={handleSubmit}
           onAbort={handleAbort}
         />
       </main>
-      <RightPanel
-        status={status}
-        revision={transcript.revision}
-        settingsOpen={settingsOpen}
-        username={auth.user.username}
-        onCloseSettings={() => setSettingsOpen(false)}
-      />
+
+      {showRight ? (
+        <RightPanel
+          status={status}
+          revision={transcript.revision}
+          settingsOpen={settingsOpen}
+          username={auth.user.username}
+          mobile={!isDesktop}
+          onCollapse={() => {
+            if (isDesktop) {
+              setRightOpen(false)
+            } else {
+              setMobileRightOpen(false)
+            }
+          }}
+          onCloseSettings={() => setSettingsOpen(false)}
+        />
+      ) : null}
     </div>
   )
 }

@@ -1,7 +1,6 @@
 //! Interactive slash commands (intercepted before the LLM).
 
 use std::path::Path;
-use std::sync::Arc;
 
 use zi_ai::{get_env_api_key, Model, SimpleStreamOptions, StreamOptions};
 
@@ -63,8 +62,8 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandMeta] = &[
     },
     SlashCommandMeta {
         name: "compact",
-        aliases: &[],
-        summary: "Write a compaction summary for the current session",
+        aliases: &["summarize"],
+        summary: "Compact context now (alias `/summarize`; auto at min(90% window, 48k tokens))",
     },
     SlashCommandMeta {
         name: "tree",
@@ -182,7 +181,7 @@ fn resolve_meta(name: &str) -> Option<&'static SlashCommandMeta> {
 /// If `line` is a slash command, handle it; otherwise return `None` (send to LLM).
 pub async fn try_handle_slash(
     line: &str,
-    runtime: &Arc<CliRuntime>,
+    runtime: &CliRuntime,
 ) -> Option<SlashOutcome> {
     let trimmed = line.trim();
     if !trimmed.starts_with('/') {
@@ -272,7 +271,7 @@ pub async fn try_handle_slash(
     )))
 }
 
-async fn handle_skill(runtime: &Arc<CliRuntime>, rest: &str) -> SlashOutcome {
+async fn handle_skill(runtime: &CliRuntime, rest: &str) -> SlashOutcome {
     let (name, args_str) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n, a),
         None => (rest, ""),
@@ -311,7 +310,7 @@ async fn handle_skill(runtime: &Arc<CliRuntime>, rest: &str) -> SlashOutcome {
     SlashOutcome::Prompt(body)
 }
 
-async fn handle_name(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
+async fn handle_name(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
     if args.is_empty() {
         let store = runtime.session.lock().await;
         let name = store.name().unwrap_or("(unnamed)");
@@ -325,24 +324,54 @@ async fn handle_name(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
     }
 }
 
-async fn handle_compact(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
-    let summary = if args.is_empty() {
-        let messages = runtime.agent.messages().await;
-        let n = messages.len();
-        format!("Manual compaction of {n} in-memory messages.")
-    } else {
-        args.join(" ")
+async fn handle_compact(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
+    let Some(compacted) = runtime.agent.compact_messages().await else {
+        return SlashOutcome::Notice(
+            "Nothing to compact (transcript already within the keep window).".into(),
+        );
     };
+    let summary = if args.is_empty() {
+        compacted.summary.clone()
+    } else {
+        format!("{}\n\n{}", args.join(" "), compacted.summary)
+    };
+    let kept_tail: Vec<_> = compacted
+        .messages
+        .iter()
+        .filter(|m| !matches!(m, zi_ai::Message::System(_)))
+        .filter(|m| match m {
+            zi_ai::Message::User(u) => match &u.content {
+                zi_ai::UserContent::Text(t) => !t.contains("<compaction>"),
+                _ => true,
+            },
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    // Slash runs outside the per-prompt event listener, so persist here.
     let mut store = runtime.session.lock().await;
-    match store.append_compaction(&summary) {
-        Ok(id) => SlashOutcome::Notice(format!(
-            "Compaction entry written (id={id}).\n{summary}"
+    let first_kept = store.last_entry_id().unwrap_or("root").to_string();
+    match store.append_compaction(&summary, first_kept, compacted.tokens_before) {
+        Ok(id) => {
+            for message in &kept_tail {
+                if let Err(err) = store.append_message(message) {
+                    return SlashOutcome::Notice(format!(
+                        "Compacted (id={id}) but failed re-appending kept messages: {err:#}"
+                    ));
+                }
+            }
+            SlashOutcome::Notice(format!(
+                "Compacted: dropped {} messages (≈{} → ≈{} tokens). entry={id}\n{summary}",
+                compacted.dropped_messages, compacted.tokens_before, compacted.tokens_after
+            ))
+        }
+        Err(err) => SlashOutcome::Notice(format!(
+            "Memory compacted but session write failed: {err:#}\n{summary}"
         )),
-        Err(err) => SlashOutcome::Notice(format!("compact failed: {err:#}")),
     }
 }
 
-async fn handle_tree(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_tree(runtime: &CliRuntime) -> SlashOutcome {
     let store = runtime.session.lock().await;
     match store.tree_summary() {
         Ok(text) => SlashOutcome::Notice(text),
@@ -350,7 +379,7 @@ async fn handle_tree(runtime: &Arc<CliRuntime>) -> SlashOutcome {
     }
 }
 
-async fn handle_fork(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_fork(runtime: &CliRuntime) -> SlashOutcome {
     let messages = runtime.agent.messages().await;
     let mut store = runtime.session.lock().await;
     let forked = match store.fork(&runtime.cwd) {
@@ -372,7 +401,7 @@ async fn handle_fork(runtime: &Arc<CliRuntime>) -> SlashOutcome {
     SlashOutcome::Notice(format!("Forked session.\n{path}"))
 }
 
-async fn handle_trust(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
+async fn handle_trust(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
     let sub = args.first().copied().unwrap_or("status");
     match sub {
         "status" | "show" => {
@@ -413,7 +442,7 @@ async fn handle_trust(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome 
     }
 }
 
-async fn handle_theme(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
+async fn handle_theme(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
     let agent_dir = crate::session_store::resolve_agent_dir();
     let trusted = is_project_trusted(&runtime.cwd);
     let extra = crate::packages::theme_paths_for(&runtime.cwd, &agent_dir, trusted);
@@ -440,14 +469,14 @@ async fn handle_theme(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome 
     }
 }
 
-async fn handle_tui(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_tui(runtime: &CliRuntime) -> SlashOutcome {
     let n = runtime
         .tui_redraws
         .load(std::sync::atomic::Ordering::Relaxed);
     SlashOutcome::Notice(format!("TUI full redraws: {n}"))
 }
 
-async fn handle_ir(runtime: &Arc<CliRuntime>, args: &str, overwrite: bool) -> SlashOutcome {
+async fn handle_ir(runtime: &CliRuntime, args: &str, overwrite: bool) -> SlashOutcome {
     let ref_str = args.trim();
     if ref_str.is_empty() {
         return SlashOutcome::Notice(
@@ -560,7 +589,7 @@ fn handle_extensions(runtime: &CliRuntime) -> SlashOutcome {
     SlashOutcome::Notice(text)
 }
 
-async fn handle_reload(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_reload(runtime: &CliRuntime) -> SlashOutcome {
     let trusted = is_project_trusted(&runtime.cwd);
     let agent_dir = crate::session_store::resolve_agent_dir();
     let _ = crate::dev_ext::seed_default_builtin_manifests(&runtime.cwd, &agent_dir, trusted);
@@ -670,7 +699,7 @@ fn fresh_system_message(cwd: &std::path::Path) -> zi_ai::Message {
     })
 }
 
-async fn handle_new(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_new(runtime: &CliRuntime) -> SlashOutcome {
     {
         let mut store = runtime.session.lock().await;
         if let Err(err) = store.restart(&runtime.cwd) {
@@ -694,7 +723,7 @@ async fn handle_new(runtime: &Arc<CliRuntime>) -> SlashOutcome {
     }
 }
 
-async fn handle_clear(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_clear(runtime: &CliRuntime) -> SlashOutcome {
     let messages = vec![fresh_system_message(&runtime.cwd)];
     runtime.agent.replace_messages(messages.clone()).await;
     let widget = dispatch_session_start(runtime, &messages).await;
@@ -736,7 +765,7 @@ async fn dispatch_session_start(
         .or(wasm_effects.widget.flatten())
 }
 
-async fn handle_session(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_session(runtime: &CliRuntime) -> SlashOutcome {
     let store = runtime.session.lock().await;
     let path = store
         .path()
@@ -764,7 +793,7 @@ async fn handle_session(runtime: &Arc<CliRuntime>) -> SlashOutcome {
     ))
 }
 
-async fn handle_resume(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
+async fn handle_resume(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
     use crate::session_store::SessionStore;
     let files = match SessionStore::list_sessions(&runtime.cwd, 20) {
         Ok(f) => f,
@@ -839,7 +868,7 @@ fn prompt_url_widget_for_messages(
     effects.widget.flatten()
 }
 
-async fn maybe_apply_prompt_url_name(runtime: &Arc<CliRuntime>, messages: &[zi_ai::Message]) {
+async fn maybe_apply_prompt_url_name(runtime: &CliRuntime, messages: &[zi_ai::Message]) {
     let current = runtime.session.lock().await.name().map(str::to_string);
     let payload = serde_json::json!({
         "messages": messages,
@@ -918,7 +947,7 @@ fn seed_from_messages(messages: &[zi_ai::Message]) -> Vec<SeedLine> {
     seed
 }
 
-async fn handle_copy(runtime: &Arc<CliRuntime>) -> SlashOutcome {
+async fn handle_copy(runtime: &CliRuntime) -> SlashOutcome {
     let text = latest_assistant_plain(runtime).await;
     if text.is_empty() {
         return SlashOutcome::Notice("Nothing to copy (no assistant reply yet).".into());
@@ -929,7 +958,7 @@ async fn handle_copy(runtime: &Arc<CliRuntime>) -> SlashOutcome {
     }
 }
 
-async fn latest_assistant_plain(runtime: &Arc<CliRuntime>) -> String {
+async fn latest_assistant_plain(runtime: &CliRuntime) -> String {
     use zi_ai::{AssistantContentBlock, Message};
     let messages = runtime.agent.messages().await;
     messages
@@ -957,14 +986,14 @@ async fn latest_assistant_plain(runtime: &Arc<CliRuntime>) -> String {
         .unwrap_or_default()
 }
 
-async fn handle_model(runtime: &Arc<CliRuntime>, args: &[&str]) -> SlashOutcome {
+async fn handle_model(runtime: &CliRuntime, args: &[&str]) -> SlashOutcome {
     if let Some(id) = args.first().copied() {
         return switch_model(runtime, id).await;
     }
     SlashOutcome::Notice(list_models(runtime).await)
 }
 
-async fn list_models(runtime: &Arc<CliRuntime>) -> String {
+async fn list_models(runtime: &CliRuntime) -> String {
     let current = runtime.agent.model().await;
     let mut lines = vec![
         format!("Current: {} ({})", current.id, current.provider),
@@ -988,7 +1017,7 @@ async fn list_models(runtime: &Arc<CliRuntime>) -> String {
     lines.join("\n")
 }
 
-async fn switch_model(runtime: &Arc<CliRuntime>, id: &str) -> SlashOutcome {
+async fn switch_model(runtime: &CliRuntime, id: &str) -> SlashOutcome {
     let Some(model) = runtime.registry.find(id).cloned() else {
         return SlashOutcome::Notice(format!(
             "unknown model `{id}`. Use /model to list ids."
@@ -1084,6 +1113,8 @@ mod tests {
         assert!(names.iter().any(|n| n == "quit"));
         assert!(names.iter().any(|n| n == "mcp"));
         assert!(names.iter().any(|n| n == "trust"));
+        assert!(names.iter().any(|n| n == "compact"));
+        assert!(names.iter().any(|n| n == "summarize"));
     }
 
     #[test]
@@ -1092,6 +1123,7 @@ mod tests {
         assert_eq!(resolve_meta("help").unwrap().name, "hotkeys");
         assert_eq!(resolve_meta("exit").unwrap().name, "quit");
         assert_eq!(resolve_meta("themes").unwrap().name, "theme");
+        assert_eq!(resolve_meta("summarize").unwrap().name, "compact");
         assert!(resolve_meta("nope").is_none());
     }
 }

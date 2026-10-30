@@ -21,7 +21,7 @@ use zi_agent::{
 };
 use zi_ai::{
     claude_sonnet_4, get_env_api_key, Message, Model, SimpleStreamOptions, StreamOptions,
-    SystemContent, SystemMessage, SystemRole,
+    SystemContent, SystemMessage, SystemRole, UserContent, UserMessage, UserRole,
 };
 use tokio::sync::Mutex;
 
@@ -31,9 +31,8 @@ use crate::keybindings::{load_keybindings, Keybindings};
 use crate::mcp_config::{connect_mcp_servers, McpRuntime};
 use crate::model_registry::ModelRegistry;
 use crate::session_store::{resolve_agent_dir, SessionStore};
-use crate::system_prompt::coding_agent_system_prompt;
+use crate::system_prompt::coding_agent_prompt_parts;
 use crate::themes::{load_themes, resolve_theme, Theme};
-use crate::tools::default_tools;
 use crate::trust::is_project_trusted;
 
 /// Shared agent + session state for a CLI run.
@@ -108,16 +107,37 @@ fn wall_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Fresh system message for a workspace cwd (TUI and web share this).
-pub fn system_message(cwd: &Path) -> Message {
-    Message::System(SystemMessage {
+/// Fresh system + optional session-context messages for a workspace cwd.
+pub fn system_messages(cwd: &Path) -> Vec<Message> {
+    let parts = coding_agent_prompt_parts(cwd);
+    let ts = wall_now_ms();
+    let mut out = vec![Message::System(SystemMessage {
         role: SystemRole::System,
-        content: SystemContent::Text(coding_agent_system_prompt(cwd)),
+        content: SystemContent::Text(parts.stable_system),
         sections: None,
         tools_added: None,
         tools_removed: None,
-        timestamp: wall_now_ms(),
-    })
+        timestamp: ts,
+    })];
+    if !parts.variable_context.is_empty() {
+        out.push(Message::User(UserMessage {
+            role: UserRole::User,
+            content: UserContent::Text(format!(
+                "<session-context>\n{}\n</session-context>",
+                parts.variable_context
+            )),
+            timestamp: ts,
+        }));
+    }
+    out
+}
+
+/// Fresh system message for a workspace cwd (stable prefix only).
+pub fn system_message(cwd: &Path) -> Message {
+    system_messages(cwd)
+        .into_iter()
+        .next()
+        .expect("system_messages always yields a system message")
 }
 
 /// Build agent, tools, and optional session store.
@@ -128,7 +148,15 @@ pub async fn build_runtime(
     api_key: Option<String>,
     registry: ModelRegistry,
 ) -> Result<CliRuntime> {
-    let base_tools = default_tools(cwd.clone());
+    let stream_options_for_tools = SimpleStreamOptions {
+        stream: StreamOptions {
+            api_key: api_key.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (base_tools, deferred_tools) =
+        crate::tools::default_tools_with_explore(cwd.clone(), model.clone(), stream_options_for_tools);
     let agent_dir = resolve_agent_dir();
     let trusted = is_project_trusted(&cwd);
     if crate::trust::project_has_trust_resources(&cwd) && !trusted {
@@ -207,10 +235,15 @@ pub async fn build_runtime(
         }
     }
 
-    let initial_messages: Vec<AgentMessage> = vec![system_message(&cwd)];
+    let initial_messages: Vec<AgentMessage> = system_messages(&cwd);
+
+    // Codemode/tool_search read SharedToolList; without this, `await tool("explore", …)`
+    // fails with "not registered" even though explore is a deferred parent tool.
+    extension_host.publish_deferred_tools(&deferred_tools);
 
     let mut options = AgentOptions::new(model, Arc::new(DefaultStreamFn));
     options.tools = tools;
+    options.deferred_tools = deferred_tools;
     options.initial_messages = initial_messages.clone();
     options.stream_options = SimpleStreamOptions {
         stream: StreamOptions {
@@ -221,6 +254,15 @@ pub async fn build_runtime(
     };
 
     let agent = Agent::new(options);
+    let archive_dir = agent_dir.join("transcript-archive");
+    agent
+        .configure_loop(|cfg| {
+            cfg.deferred_tool_names = vec!["explore".into()];
+            cfg.transcript_archive_dir = Some(archive_dir);
+            cfg.explore_budget_warn = 10;
+            cfg.explore_budget_block = 16;
+        })
+        .await;
     let session = SessionStore::open(&cwd, no_session).context("open session")?;
 
     let session_payload = serde_json::json!({
@@ -324,9 +366,53 @@ pub async fn handle_event(
     session: &Arc<Mutex<SessionStore>>,
     event: &AgentEvent,
 ) -> Result<()> {
-    if let AgentEvent::MessageEnd { message, .. } = event {
-        let mut store = session.lock().await;
-        store.append_message(message)?;
+    match event {
+        AgentEvent::MessageEnd { message, .. } => {
+            let mut store = session.lock().await;
+            store.append_message(message)?;
+        }
+        AgentEvent::ContextUsage {
+            estimated_tokens,
+            context_window,
+            compact_limit,
+            folded_tool_results,
+            cumulative_input,
+            cumulative_output,
+            near_limit,
+        } => {
+            if *near_limit {
+                tracing::warn!(
+                    estimated_tokens,
+                    compact_limit,
+                    context_window,
+                    folded_tool_results,
+                    cumulative_input,
+                    cumulative_output,
+                    "context near limit"
+                );
+            }
+        }
+        AgentEvent::Compaction {
+            summary,
+            tokens_before,
+            tokens_after,
+            dropped_messages,
+            kept_messages,
+        } => {
+            tracing::info!(
+                tokens_before,
+                tokens_after,
+                dropped_messages,
+                "{summary}"
+            );
+            let mut store = session.lock().await;
+            let first_kept = store.last_entry_id().unwrap_or("root").to_string();
+            store.append_compaction(summary, first_kept, *tokens_before)?;
+            for message in kept_messages {
+                store.append_message(message)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }

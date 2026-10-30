@@ -1,6 +1,7 @@
 import { ChevronRight, LoaderCircle, Wrench } from 'lucide-react'
 import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { toolArgsSummary, toolStepLabel } from '@/lib/tool-labels'
 import type { ToolRunState } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +22,8 @@ function formatArgs(args: unknown): string {
 export function ToolCard({ run }: { run: ToolRunState }) {
   const [open, setOpen] = useState(run.status === 'running')
   const body = run.resultText ?? run.partialText
+  const label = toolStepLabel(run.toolName)
+  const summary = toolArgsSummary(run.toolName, run.args)
   return (
     <div className="rounded-md border border-border bg-card/80">
       <button
@@ -32,8 +35,18 @@ export function ToolCard({ run }: { run: ToolRunState }) {
           className={cn('h-3.5 w-3.5 text-muted-foreground transition-transform', open && 'rotate-90')}
         />
         <Wrench className="h-3.5 w-3.5 text-primary" />
-        <span className="font-mono text-xs">{run.toolName}</span>
-        <div className="ml-auto flex items-center gap-2">
+        <span className="text-xs font-medium">{label}</span>
+        {summary ? (
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+            {summary}
+          </span>
+        ) : null}
+        {(run.repeatCount ?? 1) > 1 ? (
+          <Badge variant="outline" className="font-mono text-[10px]">
+            ×{run.repeatCount}
+          </Badge>
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {run.status === 'running' ? (
             <LoaderCircle className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
           ) : null}

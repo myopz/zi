@@ -23,7 +23,7 @@ static PARAMETERS: &str = r#"{
 pub fn ls_tool(cwd: PathBuf) -> Arc<FnAgentTool> {
     FnAgentTool::new(
         "ls",
-        "List directory contents. Directories are suffixed with '/'. Includes dotfiles.",
+        "Listed: list one directory (cheap; prefer over bash ls). Directories end with '/'. Includes dotfiles. For recursive tree walks use explore or find.",
         serde_json::from_str(PARAMETERS).expect("ls parameters schema"),
         move |_id, args, _on_update| {
             let cwd = cwd.clone();

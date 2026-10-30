@@ -94,7 +94,7 @@ export function messagesToTranscript(messages: AgentMessage[]): TranscriptItem[]
       })
     }
   }
-  return items
+  return collapseIdenticalToolResults(items)
 }
 
 export function createTranscriptState(
@@ -105,6 +105,7 @@ export function createTranscriptState(
     items: messagesToTranscript(messages),
     busy: false,
     revision,
+    contextUsage: undefined,
   }
 }
 
@@ -144,11 +145,80 @@ function upsertTool(items: TranscriptItem[], run: ToolRunState): TranscriptItem[
   const index = items.findIndex((item) => item.kind === 'tool' && item.id === id)
   const next: TranscriptItem = { kind: 'tool', id, run }
   if (index === -1) {
-    return [...items, next]
+    return collapseIdenticalToolResults([...items, next])
   }
   const copy = items.slice()
   copy[index] = next
-  return copy
+  return collapseIdenticalToolResults(copy)
+}
+
+/** Path from `Updated PATH (…)` / `Wrote PATH (…)` success lines. */
+function mutationResultPath(text: string): string | null {
+  const line = text.split('\n')[0]?.trim() ?? ''
+  const rest = line.startsWith('Updated ')
+    ? line.slice('Updated '.length)
+    : line.startsWith('Wrote ')
+      ? line.slice('Wrote '.length)
+      : null
+  if (!rest) {
+    return null
+  }
+  const cut = rest.lastIndexOf(' (')
+  return (cut >= 0 ? rest.slice(0, cut) : rest).trim() || null
+}
+
+function sameMutationPath(a: string, b: string, toolName: string): boolean {
+  if (toolName !== 'edit' && toolName !== 'write') {
+    return false
+  }
+  const pa = mutationResultPath(a)
+  const pb = mutationResultPath(b)
+  return Boolean(pa && pb && pa === pb)
+}
+
+/**
+ * Merge consecutive finished tool cards that share the same name + result text
+ * (or same edit/write path). Stops the transcript from flooding polish loops.
+ */
+export function collapseIdenticalToolResults(
+  items: TranscriptItem[],
+): TranscriptItem[] {
+  const out: TranscriptItem[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool' || item.run.status === 'running') {
+      out.push(item)
+      continue
+    }
+    const prev = out[out.length - 1]
+    const prevText = prev?.kind === 'tool' ? (prev.run.resultText ?? '') : ''
+    const curText = item.run.resultText ?? ''
+    const sameText =
+      prevText === curText && curText.length > 0
+    const samePath =
+      prev?.kind === 'tool' &&
+      sameMutationPath(prevText, curText, item.run.toolName)
+    if (
+      prev?.kind === 'tool' &&
+      prev.run.status !== 'running' &&
+      prev.run.toolName === item.run.toolName &&
+      Boolean(prev.run.isError) === Boolean(item.run.isError) &&
+      (sameText || samePath)
+    ) {
+      out[out.length - 1] = {
+        ...prev,
+        run: {
+          ...prev.run,
+          // Keep the latest success line so N edit(s) stays current.
+          resultText: curText || prev.run.resultText,
+          repeatCount: (prev.run.repeatCount ?? 1) + (item.run.repeatCount ?? 1),
+          durationMs: item.run.durationMs ?? prev.run.durationMs,
+        },
+      }
+      continue
+    }
+    out.push(item)
+  }
+  return out
 }
 
 function replaceStreamingAssistant(
@@ -181,14 +251,14 @@ export function reduceAgentEvent(
     case 'agent_start':
       return { ...state, busy: true }
     case 'agent_end':
+      // `messages` is only this run's delta (prompt + replies), not full history.
+      // Replacing items here wiped earlier turns after the second prompt.
       return {
         ...state,
         busy: false,
-        items: messagesToTranscript(event.messages).length
-          ? messagesToTranscript(event.messages)
-          : state.items.map((item) =>
-              item.kind === 'assistant' ? { ...item, streaming: false } : item,
-            ),
+        items: state.items.map((item) =>
+          item.kind === 'assistant' ? { ...item, streaming: false } : item,
+        ),
       }
     case 'turn_start':
       return { ...state, busy: true }
@@ -340,6 +410,32 @@ export function reduceAgentEvent(
         }),
       }
     }
+    case 'context_usage':
+      return {
+        ...state,
+        contextUsage: {
+          estimatedTokens: event.estimated_tokens,
+          contextWindow: event.context_window,
+          compactLimit: event.compact_limit,
+          foldedToolResults: event.folded_tool_results,
+          cumulativeInput: event.cumulative_input,
+          cumulativeOutput: event.cumulative_output,
+          nearLimit: event.near_limit,
+        },
+      }
+    case 'compaction':
+      return {
+        ...state,
+        contextUsage: {
+          estimatedTokens: event.tokens_after,
+          contextWindow: state.contextUsage?.contextWindow ?? 0,
+          compactLimit: state.contextUsage?.compactLimit ?? 0,
+          foldedToolResults: 0,
+          cumulativeInput: state.contextUsage?.cumulativeInput ?? 0,
+          cumulativeOutput: state.contextUsage?.cumulativeOutput ?? 0,
+          nearLimit: false,
+        },
+      }
     default:
       return state
   }
@@ -359,6 +455,74 @@ export function appendOptimisticUser(
         id: `user-local-${Date.now()}`,
         text,
         timestamp: Date.now(),
+      },
+    ],
+  }
+}
+
+/** Apply a local slash-command result (does not go through the LLM). */
+export function applySlashResult(
+  state: TranscriptState,
+  result: {
+    kind: 'notice' | 'reset'
+    text: string
+    revision?: number
+    seed?: Array<{ role: string; content: string }>
+  },
+): TranscriptState {
+  const now = Date.now()
+  if (result.kind === 'reset') {
+    const seedItems: TranscriptItem[] = (result.seed ?? []).map((row, index) => {
+      const role = row.role.toLowerCase()
+      if (role === 'user') {
+        return {
+          kind: 'user' as const,
+          id: `slash-seed-user-${now}-${index}`,
+          text: row.content,
+          timestamp: now,
+        }
+      }
+      if (role === 'assistant') {
+        return {
+          kind: 'system' as const,
+          id: `slash-seed-assistant-${now}-${index}`,
+          text: row.content,
+          timestamp: now,
+        }
+      }
+      return {
+        kind: 'system' as const,
+        id: `slash-seed-${now}-${index}`,
+        text: row.content,
+        timestamp: now,
+      }
+    })
+    return {
+      items: [
+        ...seedItems,
+        {
+          kind: 'system',
+          id: `slash-notice-${now}`,
+          text: result.text,
+          timestamp: now,
+        },
+      ],
+      busy: false,
+      revision: result.revision ?? state.revision,
+      contextUsage: undefined,
+    }
+  }
+  return {
+    ...state,
+    busy: false,
+    revision: result.revision ?? state.revision,
+    items: [
+      ...state.items,
+      {
+        kind: 'system',
+        id: `slash-notice-${now}`,
+        text: result.text,
+        timestamp: now,
       },
     ],
   }
