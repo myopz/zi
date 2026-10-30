@@ -1,6 +1,6 @@
 # zi 技术文档
 
-本目录维护 **zi** 的架构说明、使用方式与协议约定。根目录 [README](../README.md) 只保留概览与入口链接。
+本目录维护 **zi** 的架构说明、使用方式与协议约定。产品概览：英文 [README](../README.md)、中文 [README.zh-CN](../README.zh-CN.md)；细节仍落在本目录，避免 README 堆长表。
 
 ## 文档地图
 
@@ -60,6 +60,7 @@ flowchart TB
 ## 维护约定
 
 1. **流程与架构图优先用 Mermaid**（`flowchart` / `sequenceDiagram` / `graph`），避免 ASCII 框线图成为唯一来源。
-2. 根 README 不重复长表格；细节放到本目录并互相链接。
+2. 根目录 `README.md`（英）与 `README.zh-CN.md`（中）保留产品定位与「为什么选 zi」；不重复本目录长表格，细节互相链接。
 3. 与 pi 的合同变更同步更新 [COMPAT.md](./COMPAT.md)；实现变更同步 [ARCHITECTURE.md](./ARCHITECTURE.md) / [CRATES.md](./CRATES.md)。
 4. 标识符、crate 名、环境变量、命令保持英文原文；叙述可用中文。
+5. 许可证以仓库根 [LICENSE](../LICENSE)（MIT）为准，与 `Cargo.toml` `license = "MIT"` 一致。

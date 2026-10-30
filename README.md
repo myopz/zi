@@ -1,11 +1,35 @@
 # zi
 
-[pi](https://github.com/earendil-works/pi) coding-agent 栈的 Rust 重写。产品命名、配置路径与 CLI 二进制均使用 **zi**（不再使用 `pi-` 前缀）。
+[English](README.md) · [中文](README.zh-CN.md)
+
+`zi` is a **Rust-native coding agent** and durable agent harness: one binary for terminal, JSON/RPC automation, and a local multi-user Web UI — with WASM extensions, tight context budgets, and MCP.
+
+It shares line-protocol contracts (Session v3, `AgentEvent`, MCP) with [pi](https://github.com/earendil-works/pi) where interoperability matters, but is a separate product: own brand (`zi` / `~/.zi`), own runtime, and features that go beyond a port.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org/)
+
+## Why zi
+
+| Focus | What you get |
+|-------|----------------|
+| **Single Rust binary** | No Node runtime for the agent itself; `cargo install`-friendly, predictable deploy |
+| **Five modes, one CLI** | `text` / `json` / `rpc` / `interactive` (TUI) / `web` — scripted or interactive from the same binary |
+| **Local multi-user Web** | Built-in axum host + [`zi-web`](zi-web/) UI, token login, SQLite tenancy — not a thin wrapper around the TUI |
+| **WASM extensions** | Users ship `extension.json` + `.wasm` next to a closed binary; builtins compile in and can be toggled |
+| **Context & cost control** | LLM summarization compact, goal pin, token-aware fold/keep, explore budget, tool-output spill — aimed at Σ input, not only peak tokens |
+| **Dual product paths** | **CLI** coding agent and **Durable** harness (`zi-durable` + `zi-chord` + `zi-env`) sharing AI types and telemetry |
+| **Multi-provider** | Anthropic, OpenAI, DeepSeek, Z.AI / GLM, OpenRouter, Google — plus `~/.zi/agent/models.json` for custom endpoints |
+| **Compatible where it counts** | Session v3 NDJSON, agent/stream events, MCP JSON-RPC — see [COMPAT](docs/COMPAT.md); paths and extensions are intentionally `zi`-native |
+
+Inspired by pi’s package boundaries and contracts; not a drop-in rename of `pi`.
+
+## Architecture (overview)
 
 ```mermaid
 flowchart LR
-  subgraph cli [CLI 路径]
-    ZI[zi 二进制]
+  subgraph cli [CLI path]
+    ZI[zi binary]
     AGENT[zi-agent]
     AI[zi-ai]
     TUI[zi-tui]
@@ -16,7 +40,7 @@ flowchart LR
     ZI --> SESS
     AGENT --> MCP
   end
-  subgraph durable [Durable 路径]
+  subgraph durable [Durable path]
     DUR[zi-durable]
     CHORD[zi-chord]
     ENV[zi-env / zi-envd]
@@ -30,54 +54,63 @@ flowchart LR
   CHORD -.-> TEL
 ```
 
-## 快速开始
+Details: [Architecture](docs/ARCHITECTURE.md) · [Crates](docs/CRATES.md)
+
+## Quick start
 
 ```bash
-# 构建
+# Build
 cargo build --workspace
 
-# 帮助
+# Help
 cargo run -p zi-coding-agent -- --help
 
-# 单次提问（API Key 可 export 或写在 .env / ~/.zi/agent/.env）
-cargo run -p zi-coding-agent -- --model deepseek-flash -p "用一句话概括本仓库" --no-session
+# One-shot (API key via export, .env, or ~/.zi/agent/.env)
+cargo run -p zi-coding-agent -- --model deepseek-flash -p "Summarize this repo in one sentence" --no-session
 
-# 冒烟
+# Smoke
 ./evals/smoke.sh
 ```
 
-无 `-p` 且 stdin 为 TTY 时进入交互式 TUI；也可用 `--mode interactive` 强制进入。自定义端点：复制 [`models.json.example`](models.json.example) 到 `~/.zi/agent/models.json`，详见 [MODELS.md](docs/MODELS.md)。
+Without `-p` and with a TTY stdin, zi opens the interactive TUI; use `--mode interactive` to force it. Custom endpoints: copy [`models.json.example`](models.json.example) to `~/.zi/agent/models.json` — see [MODELS.md](docs/MODELS.md).
 
-## 文档
+```bash
+# Local Web UI (default 127.0.0.1:3080)
+cargo run -p zi-coding-agent -- web seed-user alice
+cargo run -p zi-coding-agent -- --mode web --no-open
+```
 
-技术文档集中在 [`docs/`](docs/README.md)：
+## Documentation
 
-| 文档 | 内容 |
-|------|------|
-| [入门](docs/GETTING_STARTED.md) | 环境、API Key、第一次运行 |
-| [架构](docs/ARCHITECTURE.md) | 双路径、依赖图、事件流 |
-| [CLI](docs/CLI.md) | 模式、参数、RPC、web |
-| [Web UI](docs/WEB.md) | token 登录、SQLite、REST/WS |
-| [配置与路径](docs/CONFIGURATION.md) | `~/.zi/`、会话、环境变量 |
-| [扩展开发](docs/EXTENSIONS.md) | 从 0 写 WASM / host pack 到在 zi 里使用 |
-| [模型](docs/MODELS.md) | 内置目录、`.env`、`models.json` |
-| [Crates](docs/CRATES.md) | 各 crate 职责与对应 pi 包 |
-| [会话格式](docs/SESSION.md) | Session v3 NDJSON |
-| [兼容性](docs/COMPAT.md) | 与 pi 的协议对齐与差异 |
-| [开发](docs/DEVELOPMENT.md) | 构建、测试、镜像、xtask |
+| Doc | Contents |
+|-----|----------|
+| [Getting started](docs/GETTING_STARTED.md) | Env, API keys, first run |
+| [Architecture](docs/ARCHITECTURE.md) | Dual paths, dependency graph, event flow |
+| [CLI](docs/CLI.md) | Modes, flags, RPC, web |
+| [Web UI](docs/WEB.md) | Token auth, SQLite, REST/WS |
+| [Configuration](docs/CONFIGURATION.md) | `~/.zi/`, sessions, env vars |
+| [Extensions](docs/EXTENSIONS.md) | WASM / host pack → use in zi |
+| [Models](docs/MODELS.md) | Built-in catalog, `.env`, `models.json` |
+| [Crates](docs/CRATES.md) | Crate roles vs pi packages |
+| [Session format](docs/SESSION.md) | Session v3 NDJSON |
+| [Compatibility](docs/COMPAT.md) | Protocol alignment and intentional diffs |
+| [Development](docs/DEVELOPMENT.md) | Build, test, images, xtask |
 
-## 与 pi 的主要差异
+Index: [`docs/README.md`](docs/README.md). Technical docs are primarily in Chinese; identifiers stay English. Product overview in Chinese: [README.zh-CN.md](README.zh-CN.md).
 
-| 主题 | pi | zi |
-|------|----|----|
-| 配置根 | `~/.pi/`、`.pi/` | `~/.zi/`、`.zi/`（项目资源需 `/trust`） |
-| CLI | `pi`（npm） | `zi`（Cargo） |
-| 扩展 | TS/JS（jiti） | 用户仅 bin：外部目录 WASM；builtins 编进二进制可开关；skills / prompts / themes 为文件资源 |
-| Env 同步行 | `PI-ENV` | `ZI-ENV`（不可混用） |
-| 模型目录 | 生成 TS + `models.json` | 静态子集 + `~/.zi/agent/models.json` |
+## Relation to pi
 
-会话 v3、`AgentEvent`、`AssistantMessageEvent`、MCP JSON-RPC 以 [兼容性文档](docs/COMPAT.md) 为准。
+| Topic | pi | zi |
+|-------|----|----|
+| Config root | `~/.pi/`, `.pi/` | `~/.zi/`, `.zi/` (project resources need `/trust`) |
+| CLI | `pi` (npm) | `zi` (Cargo / single binary) |
+| Extensions | TS/JS (jiti) | External WASM for end users; builtins in-binary; skills / prompts / themes as files |
+| Env sync line | `PI-ENV` | `ZI-ENV` (not interchangeable) |
+| Model catalog | Generated TS + `models.json` | Static subset + `~/.zi/agent/models.json` |
+| Web / durable | Separate concerns in the TS stack | First-class `web` mode + Durable crates in this workspace |
 
-## 许可证
+Session v3, `AgentEvent`, `AssistantMessageEvent`, and MCP JSON-RPC follow [COMPAT](docs/COMPAT.md).
 
-MIT（与 workspace `Cargo.toml` 一致）。
+## License
+
+[MIT](LICENSE) — same as workspace `Cargo.toml`.

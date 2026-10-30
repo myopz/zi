@@ -190,12 +190,18 @@ async fn run_rg(
                 "[grep] timed out after {}s (narrow path/glob or install ripgrep)",
                 DEFAULT_TIMEOUT.as_secs()
             )),
+            false,
         ));
     }
     if let Some(err) = captured.fatal_stderr() {
         return Err(format!("rg failed: {err}"));
     }
-    Ok(finish_matches(&captured.stdout, limit, None))
+    Ok(finish_matches(
+        &captured.stdout,
+        limit,
+        None,
+        captured.truncated,
+    ))
 }
 
 async fn run_system_grep(
@@ -244,6 +250,7 @@ async fn run_system_grep(
                         "[grep] system grep timed out after {}s (install ripgrep; narrow path/glob)",
                         DEFAULT_TIMEOUT.as_secs()
                     )),
+                    false,
                 );
             }
             if let Some(err) = captured.fatal_stderr() {
@@ -257,6 +264,7 @@ async fn run_system_grep(
                 &captured.stdout,
                 limit,
                 Some("[grep] used system grep fallback (ripgrep not on PATH)"),
+                captured.truncated,
             )
         }
         Err(err) => AgentToolResult::error(format!("ripgrep and system grep unavailable: {err}")),
@@ -402,12 +410,22 @@ async fn run_capped(mut cmd: Command, limit: usize) -> Result<Captured, String> 
     })
 }
 
-fn finish_matches(text: &str, limit: usize, footer: Option<&str>) -> AgentToolResult {
+fn finish_matches(
+    text: &str,
+    limit: usize,
+    footer: Option<&str>,
+    stream_capped: bool,
+) -> AgentToolResult {
     let mut body = if text.trim().is_empty() {
         "(no matches)".to_string()
     } else {
         limit_match_lines(text.trim_end(), limit)
     };
+    // `run_capped` already stops at `limit` lines, so `limit_match_lines` sees no excess —
+    // surface early kill when the stream hit the cap.
+    if stream_capped && !text.trim().is_empty() && !body.contains("… truncated") {
+        body.push_str(&format!("\n… truncated to {limit} lines"));
+    }
     if let Some(note) = footer {
         body.push_str("\n\n");
         body.push_str(note);
